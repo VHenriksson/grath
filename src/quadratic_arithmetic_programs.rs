@@ -17,6 +17,59 @@ pub struct QAP<F: Field> {
     /// Target polynomial T(x) = (x-1)(x-2)...(x-n)
     pub target_polynomial: DensePolynomial<F>,
 }
+
+impl<F: Field> QAP<F> {
+    /// Generate the division polynomial H(x) = (A(x) * B(x) - C(x)) / T(x)
+    /// where A(x), B(x), C(x) are computed from the witness
+    pub fn division_polynomial(&self, witness: &[F]) -> DensePolynomial<F> {
+        assert_eq!(witness.len(), self.num_variables, "Witness length must match QAP variables");
+        
+        // Compute U(x) = sum(witness[i] * u_polynomials[i])
+        let mut u_poly = DensePolynomial::from_coefficients_vec(vec![F::zero()]);
+        for i in 0..self.num_variables {
+            let scaled_u = DensePolynomial::from_coefficients_vec(
+                self.u_polynomials[i].coeffs().iter().map(|&c| c * witness[i]).collect()
+            );
+            u_poly = u_poly + scaled_u;
+        }
+        
+        // Compute V(x) = sum(witness[i] * v_polynomials[i])
+        let mut v_poly = DensePolynomial::from_coefficients_vec(vec![F::zero()]);
+        for i in 0..self.num_variables {
+            let scaled_v = DensePolynomial::from_coefficients_vec(
+                self.v_polynomials[i].coeffs().iter().map(|&c| c * witness[i]).collect()
+            );
+            v_poly = v_poly + scaled_v;
+        }
+        
+        // Compute W(x) = sum(witness[i] * w_polynomials[i])
+        let mut w_poly = DensePolynomial::from_coefficients_vec(vec![F::zero()]);
+        for i in 0..self.num_variables {
+            let scaled_w = DensePolynomial::from_coefficients_vec(
+                self.w_polynomials[i].coeffs().iter().map(|&c| c * witness[i]).collect()
+            );
+            w_poly = w_poly + scaled_w;
+        }
+        
+        // Compute U(x) * V(x) - W(x)
+        let uv_poly = u_poly.naive_mul(&v_poly);
+        let numerator = &uv_poly - &w_poly;
+        
+        // For a valid witness, numerator should be divisible by T(x) with no remainder
+        // Check this by computing quotient * T(x) and seeing if it equals numerator
+        let quotient = &numerator / &self.target_polynomial;
+        let reconstructed = quotient.naive_mul(&self.target_polynomial);
+        
+        // Check if the remainder is zero (valid witness)
+        if reconstructed != numerator {
+            panic!("Invalid witness");
+        }
+        
+        quotient
+    }
+}
+
+
 /// Lagrange interpolation - the heart of R1CS to QAP conversion
 fn lagrange_interpolate<F: Field>(points: &[(F, F)]) -> DensePolynomial<F> {
     if points.is_empty() {
@@ -457,5 +510,91 @@ mod tests {
         assert_eq!(qap.w_polynomials[3].evaluate(&Fr::from(2u64)), Fr::from(0u64)); // z term should be 0 at constraint 2
         assert_eq!(qap.w_polynomials[4].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // w term should be 0 at constraint 1
         assert_eq!(qap.w_polynomials[4].evaluate(&Fr::from(2u64)), Fr::from(1u64)); // w term should be 1 at constraint 2
+    }
+
+    #[test]
+    fn test_division_polynomial() {
+        // Create a simple constraint system: x * y = z
+        // Variables: [1, x, y, z] (indices 0, 1, 2, 3)
+        // Constraint: x * y = z
+        
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 3,   // x, y, z
+            num_constraints: 1,
+            a: vec![
+                vec![(Fr::from(1u64), 1)], // x coefficient in constraint 0
+            ],
+            a_num_non_zero: 1,
+            b: vec![
+                vec![(Fr::from(1u64), 2)], // y coefficient in constraint 0
+            ],
+            b_num_non_zero: 1,
+            c: vec![
+                vec![(Fr::from(1u64), 3)], // z coefficient in constraint 0
+            ],
+            c_num_non_zero: 1,
+        };
+        
+        let qap = constraint_matrices_to_qap(&constraint_matrices, 1);
+        
+        // Test with a valid witness: [1, 3, 4, 12] where 3 * 4 = 12
+        let witness = vec![Fr::from(1u64), Fr::from(3u64), Fr::from(4u64), Fr::from(12u64)];
+        
+        // Generate division polynomial
+        let h_poly = qap.division_polynomial(&witness);
+        
+        // For a valid witness, H(x) * T(x) should equal A(x) * B(x) - C(x)
+        // Let's verify this at a few points
+        for test_point in [Fr::from(5u64), Fr::from(10u64), Fr::from(17u64)] {
+            // Compute A(x), B(x), C(x) at test point
+            let mut a_val = Fr::zero();
+            let mut b_val = Fr::zero();
+            let mut c_val = Fr::zero();
+            
+            for i in 0..qap.num_variables {
+                a_val += witness[i] * qap.u_polynomials[i].evaluate(&test_point);
+                b_val += witness[i] * qap.v_polynomials[i].evaluate(&test_point);
+                c_val += witness[i] * qap.w_polynomials[i].evaluate(&test_point);
+            }
+            
+            let left_side = a_val * b_val - c_val;
+            let right_side = h_poly.evaluate(&test_point) * qap.target_polynomial.evaluate(&test_point);
+            
+            assert_eq!(left_side, right_side, "H(x) * T(x) should equal A(x) * B(x) - C(x) at point {}", test_point);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid witness")]
+    fn test_division_polynomial_invalid_witness() {
+        // Create a simple constraint system: x * y = z
+        // Variables: [1, x, y, z] (indices 0, 1, 2, 3)
+        // Constraint: x * y = z
+        
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 3,   // x, y, z
+            num_constraints: 1,
+            a: vec![
+                vec![(Fr::from(1u64), 1)], // x coefficient in constraint 0
+            ],
+            a_num_non_zero: 1,
+            b: vec![
+                vec![(Fr::from(1u64), 2)], // y coefficient in constraint 0
+            ],
+            b_num_non_zero: 1,
+            c: vec![
+                vec![(Fr::from(1u64), 3)], // z coefficient in constraint 0
+            ],
+            c_num_non_zero: 1,
+        };
+        
+        let qap = constraint_matrices_to_qap(&constraint_matrices, 1);
+        
+        // Test with an invalid witness: [1, 3, 4, 13] where 3 * 4 != 13
+        let witness = vec![Fr::from(1u64), Fr::from(3u64), Fr::from(4u64), Fr::from(13u64)];
+        
+        let _h_poly = qap.division_polynomial(&witness);
     }
 }
