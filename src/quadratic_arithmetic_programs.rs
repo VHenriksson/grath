@@ -1,6 +1,7 @@
 use ark_ff::{Field, Zero};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseUVPolynomial, Polynomial};
+use ark_relations::r1cs::ConstraintMatrices;
 
 /// QAP representation 
 #[derive(Debug, Clone)]
@@ -80,6 +81,106 @@ fn create_target_polynomial<F: Field>(num_constraints: usize) -> DensePolynomial
     }
     
     target
+}
+
+/// Convert arkworks ConstraintMatrices to QAP
+/// 
+/// # Example
+/// ```rust,ignore
+/// use ark_bn254::Fr;
+/// use ark_relations::r1cs::ConstraintMatrices;
+/// use grath::quadratic_arithmetic_programs::constraint_matrices_to_qap;
+/// 
+/// // Create constraint matrices for x * y = z
+/// let matrices = ConstraintMatrices {
+///     num_instance_variables: 1,  // constant 1
+///     num_witness_variables: 3,   // x, y, z
+///     num_constraints: 1,
+///     a: vec![vec![(Fr::from(1u64), 1)]], // x coefficient
+///     a_num_non_zero: 1,
+///     b: vec![vec![(Fr::from(1u64), 2)]], // y coefficient  
+///     b_num_non_zero: 1,
+///     c: vec![vec![(Fr::from(1u64), 3)]], // z coefficient
+///     c_num_non_zero: 1,
+/// };
+/// 
+/// let qap = constraint_matrices_to_qap(&matrices, 1);
+/// ```
+pub fn constraint_matrices_to_qap<F: Field>(
+    matrices: &ConstraintMatrices<F>,
+    num_inputs: usize,
+) -> QAP<F> {
+    let num_constraints = matrices.num_constraints;
+    let num_variables = matrices.num_instance_variables + matrices.num_witness_variables;
+    
+    let mut a_polynomials = Vec::new();
+    let mut b_polynomials = Vec::new();
+    let mut c_polynomials = Vec::new();
+    
+    // For each variable, interpolate its column across all constraints
+    for var_idx in 0..num_variables {
+        // Extract column var_idx from each matrix
+        let a_values: Vec<F> = (0..num_constraints)
+            .map(|constraint_idx| {
+                // Find entry in sparse matrix representation
+                matrices.a[constraint_idx]
+                    .iter()
+                    .find(|(_, col)| *col == var_idx)
+                    .map(|(val, _)| *val)
+                    .unwrap_or(F::zero())
+            })
+            .collect();
+            
+        let b_values: Vec<F> = (0..num_constraints)
+            .map(|constraint_idx| {
+                matrices.b[constraint_idx]
+                    .iter()
+                    .find(|(_, col)| *col == var_idx)
+                    .map(|(val, _)| *val)
+                    .unwrap_or(F::zero())
+            })
+            .collect();
+            
+        let c_values: Vec<F> = (0..num_constraints)
+            .map(|constraint_idx| {
+                matrices.c[constraint_idx]
+                    .iter()
+                    .find(|(_, col)| *col == var_idx)
+                    .map(|(val, _)| *val)
+                    .unwrap_or(F::zero())
+            })
+            .collect();
+        
+        // Create evaluation points: (1, value[0]), (2, value[1]), ..., (n, value[n-1])
+        let points_a: Vec<(F, F)> = (0..num_constraints)
+            .map(|i| (F::from((i + 1) as u64), a_values[i]))
+            .collect();
+            
+        let points_b: Vec<(F, F)> = (0..num_constraints)
+            .map(|i| (F::from((i + 1) as u64), b_values[i]))
+            .collect();
+            
+        let points_c: Vec<(F, F)> = (0..num_constraints)
+            .map(|i| (F::from((i + 1) as u64), c_values[i]))
+            .collect();
+        
+        // Lagrange interpolation
+        a_polynomials.push(lagrange_interpolate(&points_a));
+        b_polynomials.push(lagrange_interpolate(&points_b));
+        c_polynomials.push(lagrange_interpolate(&points_c));
+    }
+    
+    // Create target polynomial T(x) = (x-1)(x-2)...(x-n)
+    let target_polynomial = create_target_polynomial(num_constraints);
+    
+    QAP {
+        num_variables,
+        num_inputs,
+        a_polynomials,
+        b_polynomials,
+        c_polynomials,
+        target_polynomial,
+    }
 }
 
 #[cfg(test)]
@@ -190,5 +291,171 @@ mod tests {
         assert_eq!(poly.evaluate(&Fr::from(2u64)), Fr::from(4u64));
         assert_eq!(poly.evaluate(&Fr::from(3u64)), Fr::from(9u64));
     }
+    
+    #[test]
+    fn test_constraint_matrices_to_qap() {
+        // Create a simple constraint system: x * y = z
+        // Variables: [1, x, y, z] (indices 0, 1, 2, 3)
+        // Constraint: x * y = z
+        
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 3,   // x, y, z
+            num_constraints: 1,
+            a: vec![
+                vec![(Fr::from(1u64), 1)], // x coefficient in constraint 0
+            ],
+            a_num_non_zero: 1,
+            b: vec![
+                vec![(Fr::from(1u64), 2)], // y coefficient in constraint 0
+            ],
+            b_num_non_zero: 1,
+            c: vec![
+                vec![(Fr::from(1u64), 3)], // z coefficient in constraint 0
+            ],
+            c_num_non_zero: 1,
+        };
+        
+        let qap = constraint_matrices_to_qap(&constraint_matrices, 1);
+        
+        // Verify QAP structure
+        assert_eq!(qap.num_variables, 4);
+        assert_eq!(qap.num_inputs, 1);
+        assert_eq!(qap.a_polynomials.len(), 4);
+        assert_eq!(qap.b_polynomials.len(), 4);
+        assert_eq!(qap.c_polynomials.len(), 4);
+        
+        // a-polynomial should be 1 at x=1 for variable 1 (x)
+        assert_eq!(qap.a_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // constant term should be 0
+        assert_eq!(qap.a_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(1u64));
+        assert_eq!(qap.a_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // y term should be 0
+        assert_eq!(qap.a_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // z term should be 0
+        // b-polynomial should be 1 at x=1 for variable 2 (y)
+        assert_eq!(qap.b_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        assert_eq!(qap.b_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        assert_eq!(qap.b_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(1u64));
+        assert_eq!(qap.b_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        // c-polynomial should be 1 at x=1 for variable 3 (z)
+        assert_eq!(qap.c_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        assert_eq!(qap.c_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        assert_eq!(qap.c_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(0u64));
+        assert_eq!(qap.c_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(1u64));
+        
+        // Target polynomial should evaluate to 0 at constraint evaluation point (x=1)
+        assert_eq!(qap.target_polynomial.evaluate(&Fr::from(1u64)), Fr::zero());
+    }
 
+    #[test]
+    fn test_constraint_matrices_to_qap_addition() {
+        // Create a simple constraint system: z + x = w
+        // Variables: [1, x, y, z, w] (indices 0, 1, 2, 3, 4)
+        // Constraint: (z + x) * 1 = w
+        
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 4,   // x, y, z, w
+            num_constraints: 1,
+            a: vec![
+                vec![(Fr::from(1u64), 1), (Fr::from(1u64), 3)], // x and z coefficients in constraint 0
+            ],
+            a_num_non_zero: 2,
+            b: vec![
+                vec![(Fr::from(1u64), 0)], // constant term in constraint 0
+            ],
+            b_num_non_zero: 1,
+            c: vec![
+                vec![(Fr::from(1u64), 4)], // w coefficient in constraint 0
+            ],
+            c_num_non_zero: 1,
+        };
+        
+        let qap = constraint_matrices_to_qap(&constraint_matrices, 1);
+        
+        // Verify QAP structure
+        assert_eq!(qap.num_variables, 5);
+        assert_eq!(qap.num_inputs, 1);
+        assert_eq!(qap.a_polynomials.len(), 5);
+        assert_eq!(qap.b_polynomials.len(), 5);
+        assert_eq!(qap.c_polynomials.len(), 5);
+        
+        // a-polynomial should reflect coefficients for x and z
+        assert_eq!(qap.a_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // constant term should be 0
+        assert_eq!(qap.a_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // x term should be 1
+        assert_eq!(qap.a_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // y term should be 0
+        assert_eq!(qap.a_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // z term should be 1
+        assert_eq!(qap.a_polynomials[4].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // w term should be 0
+
+        // b-polynomial should be 1 at x=1 for constant term
+        assert_eq!(qap.b_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // constant term should be 1
+        assert_eq!(qap.b_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // x term should be 0
+        assert_eq!(qap.b_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // y term should be 0
+        assert_eq!(qap.b_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // z term should be 0
+        assert_eq!(qap.b_polynomials[4].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // w term should be 0
+
+        // c-polynomial should be 1 at x=1 for w term
+        assert_eq!(qap.c_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // constant term should be 0
+        assert_eq!(qap.c_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // x term should be 0
+        assert_eq!(qap.c_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // y term should be 0
+        assert_eq!(qap.c_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // z term should be 0
+        assert_eq!(qap.c_polynomials[4].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // w term should be 1 
+    }
+
+    #[test]
+    fn test_constraint_matrices_to_qap_two_constraints() {
+        // Create a simple constraint system:
+        // 1) x * y = z
+        // 2) z + x = w
+        // Variables: [1, x, y, z, w] (indices 0, 1, 2, 3, 4)
+        // Constraints:
+        // 1) x * y = z
+        // 2) (z + x) * 1 = w
+        
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 4,   // x, y, z, w
+            num_constraints: 2,
+            a: vec![
+                vec![(Fr::from(1u64), 1)],             // Constraint 0: x coefficient
+                vec![(Fr::from(1u64), 1), (Fr::from(1u64), 3)], // Constraint 1: x and z coefficients
+            ],
+            a_num_non_zero: 3,
+            b: vec![
+                vec![(Fr::from(1u64), 2)],             // Constraint 0: y coefficient  
+                vec![(Fr::from(1u64), 0)],             // Constraint 1: constant term
+            ],
+            b_num_non_zero: 2,
+            c: vec![
+                vec![(Fr::from(1u64), 3)],             // Constraint 0: z coefficient
+                vec![(Fr::from(1u64), 4)],             // Constraint 1: w coefficient
+            ],
+            c_num_non_zero: 2,
+        };
+        
+        let qap = constraint_matrices_to_qap(&constraint_matrices, 1);
+        
+        // Verify QAP structure
+        assert_eq!(qap.num_variables, 5);
+        assert_eq!(qap.num_inputs, 1);
+        assert_eq!(qap.a_polynomials.len(), 5);
+        assert_eq!(qap.b_polynomials.len(), 5);
+        assert_eq!(qap.c_polynomials.len(), 5);
+        
+        // a-polynomial should reflect coefficients for x and z across both constraints
+        assert_eq!(qap.a_polynomials[1].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // x term should be 1 at constraint 1
+        assert_eq!(qap.a_polynomials[1].evaluate(&Fr::from(2u64)), Fr::from(1u64)); // x term should be 1 at constraint 2
+        assert_eq!(qap.a_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // z term should be 0 at constraint 1
+        assert_eq!(qap.a_polynomials[3].evaluate(&Fr::from(2u64)), Fr::from(1u64)); // z term should be 1 at constraint 2
+
+        // b-polynomial should reflect coefficients for y and constant term across both constraints
+        assert_eq!(qap.b_polynomials[2].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // y term should be 1 at constraint 1
+        assert_eq!(qap.b_polynomials[2].evaluate(&Fr::from(2u64)), Fr::from(0u64)); // y term should be 0 at constraint 2
+        assert_eq!(qap.b_polynomials[0].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // constant term should be 0 at constraint 1
+        assert_eq!(qap.b_polynomials[0].evaluate(&Fr::from(2u64)), Fr::from(1u64)); // constant term should be 1 at constraint 2
+
+        // c-polynomial should reflect coefficients for z and w across both constraints
+        assert_eq!(qap.c_polynomials[3].evaluate(&Fr::from(1u64)), Fr::from(1u64)); // z term should be 1 at constraint 1
+        assert_eq!(qap.c_polynomials[3].evaluate(&Fr::from(2u64)), Fr::from(0u64)); // z term should be 0 at constraint 2
+        assert_eq!(qap.c_polynomials[4].evaluate(&Fr::from(1u64)), Fr::from(0u64)); // w term should be 0 at constraint 1
+        assert_eq!(qap.c_polynomials[4].evaluate(&Fr::from(2u64)), Fr::from(1u64)); // w term should be 1 at constraint 2
+    }
 }
