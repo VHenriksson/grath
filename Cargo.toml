@@ -6,3 +6,9 @@ description = "An implementation of Groth16"
 license = "MIT"
 
 [dependencies]
+ark-ff = "0.4"
+ark-poly = "0.4"
+ark-std = "0.4"
+rand_chacha = "0.3"
+ark-bn254 = "0.4"
+rand = "0.8"
