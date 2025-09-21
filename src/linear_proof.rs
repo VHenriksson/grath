@@ -1,13 +1,30 @@
 use ark_ff::Field;
 use rand_chacha::ChaCha20Rng;
 use rand::{SeedableRng, RngCore};
+use ark_poly::Polynomial;
+
+use crate::quadratic_arithmetic_programs::QAP;
+
+/// Groth16 setup parameters
+/// 
+/// Uses dynamic sizing for flexibility in constraint system sizes
+pub struct Groth16SetupParameters<F: Field> {
+    pub alpha: F,
+    pub beta: F,
+    pub gamma: F,
+    pub delta: F,
+    pub x_powers: Vec<F>, // x^0, x^1, ..., x^{N-1}
+    pub l_terms: Vec<F>,  // L terms for input variables
+    pub k_terms: Vec<F>,  // M-L terms for auxiliary variables
+    pub x_powers_times_t_div_by_delta: Vec<F>, // x^i * t(x) / delta for i in 0..N
+}
 
 /// Generate toxic waste parameters for Groth16 setup
 /// 
 /// Returns five field elements: alpha, beta, gamma, delta, x
 /// These are the "toxic waste" parameters that must be securely discarded
 /// after the trusted setup ceremony.
-fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
+pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     // Use ChaCha20: cryptographically secure, fast, side-channel resistant
     let mut rng = ChaCha20Rng::from_entropy();
     
@@ -20,13 +37,107 @@ fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     (alpha, beta, gamma, delta, x)
 }
 
-pub fn setup_groth16<F: Field, const N: usize>() -> (F, F, F, F, F) {
-    generate_toxic_waste::<F>()
+pub fn setup_linear<F: Field>(qap: QAP<F>) -> Groth16SetupParameters<F> {
+    let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<F>();
+    setup_linear_with_params(qap, alpha, beta, gamma, delta, x)
+}
+
+pub fn setup_linear_with_params<F: Field>(
+    qap: QAP<F>, 
+    alpha: F, 
+    beta: F, 
+    gamma: F, 
+    delta: F, 
+    x: F
+) -> Groth16SetupParameters<F> {
+    
+    // Generate powers of x up to the degree needed for the QAP
+    let degree = qap.target_polynomial.degree();
+    let mut x_powers = Vec::with_capacity(degree + 1);
+    let mut current_power = F::one();
+    for _ in 0..=degree {
+        x_powers.push(current_power);
+        current_power *= x;
+    }
+    
+    // Generate L terms for input variables
+    let mut l_terms = vec![F::zero(); qap.num_inputs];
+    for i in 0..qap.num_inputs {
+        // For Groth16, L terms are typically: (beta * u_i(x) + alpha * v_i(x) + w_i(x)) / gamma
+        let u_val = qap.u_polynomials[i].evaluate(&x);
+        let v_val = qap.v_polynomials[i].evaluate(&x);
+        let w_val = qap.w_polynomials[i].evaluate(&x);
+        l_terms[i] = (beta * u_val + alpha * v_val + w_val) / gamma;
+    }
+    
+    // Generate K terms for auxiliary variables (witness variables)
+    let mut k_terms = vec![F::zero(); qap.num_variables - qap.num_inputs];
+    for i in qap.num_inputs..qap.num_variables {
+        let u_val = qap.u_polynomials[i].evaluate(&x);
+        let v_val = qap.v_polynomials[i].evaluate(&x);
+        let w_val = qap.w_polynomials[i].evaluate(&x);
+        k_terms[i - qap.num_inputs] = (beta * u_val + alpha * v_val + w_val) / delta;
+    }
+    
+    // Generate x^i * t(x) / delta terms
+    let mut x_powers_times_t_div_by_delta = Vec::with_capacity(degree);
+    if degree >= 2 {
+        for i in 0..degree-2 {
+            let x_power_i = x_powers[i];
+            let t_val = qap.target_polynomial.evaluate(&x);
+            x_powers_times_t_div_by_delta.push(x_power_i * t_val / delta);
+        }
+    }
+    
+    Groth16SetupParameters {
+        alpha,
+        beta,
+        gamma,
+        delta,
+        x_powers,
+        l_terms,
+        k_terms,
+        x_powers_times_t_div_by_delta,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use ark_poly::univariate::DensePolynomial;
+
     use super::*;
+
+    /// Create a QAP that represents the constraint: x * 1 = 4
+    /// Variables: [1, x] where:
+    /// - variable 0 is the constant 1 (public input)
+    /// - variable 1 is x (witness variable)
+    fn create_test_qap<F: Field>() -> QAP<F> {
+        use ark_poly::DenseUVPolynomial;
+        
+        // u polynomial for "x * 1": u_0=0, u_1=1 (selects variable 1 = x)
+        let u_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
+        let u_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::one()]);  // constant 1 (selects x)
+        
+        // v polynomial for "x * 1": v_0=1, v_1=0 (selects variable 0 = 1)  
+        let v_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::one()]);  // constant 1 (selects 1)
+        let v_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
+
+        // w polynomial for "= 4": w_0=4, w_1=0 (constant 4)
+        let w_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::from(4u32)]); // constant 4
+        let w_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
+
+        // Target polynomial: (x-1) - evaluates to 0 when x=1
+        let target_poly = DensePolynomial::from_coefficients_vec(vec![-F::one(), F::one()]); // (x-1)
+
+        QAP {
+            num_variables: 2,  
+            num_inputs: 1,     // public input: the constant 1
+            u_polynomials: vec![u_poly_0, u_poly_1],
+            v_polynomials: vec![v_poly_0, v_poly_1],
+            w_polynomials: vec![w_poly_0, w_poly_1],
+            target_polynomial: target_poly,
+        }
+    }
 
 
     #[test] 
@@ -41,5 +152,251 @@ mod tests {
         
         assert_eq!(unique_count, 5, "Expected no collisions in large field, but got {} unique elements", unique_count);
     }
-}
 
+
+    /// NILP Proof structure
+    #[derive(Debug, Clone)]
+    struct NILPProof<F: Field> {
+        /// Proof elements for the linear proof
+        pub proof_a: F,  // Evaluation of polynomial A at secret point
+        pub proof_b: F,  // Evaluation of polynomial B at secret point  
+        pub proof_c: F,  // Evaluation of polynomial C at secret point
+    }
+
+    /// NILP Prover - generates a proof that the witness satisfies the QAP
+    fn prove_linear<F: Field>(
+        qap: &QAP<F>, 
+        witness: &[F], 
+        setup: &Groth16SetupParameters<F>
+    ) -> NILPProof<F> {
+        let mut rng = &mut ChaCha20Rng::from_entropy();
+        let r: F = F::rand(&mut rng);
+        let s: F = F::rand(&mut rng);
+        prove_linear_with_randomness(qap, witness, setup, r, s)
+    }
+
+    /// NILP Prover with explicit randomness parameters for testing
+    fn prove_linear_with_randomness<F: Field>(
+        qap: &QAP<F>, 
+        witness: &[F], 
+        setup: &Groth16SetupParameters<F>,
+        r: F,
+        s: F
+    ) -> NILPProof<F> {
+        assert_eq!(witness.len(), qap.num_variables, "Witness length must match QAP variables");
+        
+        let x = setup.x_powers[1]; // The secret x value (x^1)
+
+        // Calculating h(x) = (U(x)*V(x) - W(x)) / t(x) is actually NOT
+        // needed, since we only use it in the context of h(x)t(x), which
+        // can be computed directly from U(x), V(x), W(x).
+        // We keep it like this for now, since we already implemented it, 
+        // and it gives us a free check that the witness satisfies the QAP.
+        let h: DensePolynomial<F> = qap.division_polynomial(witness);
+
+        // Compute A(x), B(x), C(x) using the witness
+        let mut a_val = F::zero();
+        let mut b_val = F::zero();
+        let mut c_val = F::zero();
+
+        for i in 0..qap.num_variables {
+            let witness_i = witness[i];
+            let u_i = qap.u_polynomials[i].evaluate(&x);
+            let v_i = qap.v_polynomials[i].evaluate(&x);
+            a_val += witness_i * u_i;
+            b_val += witness_i * v_i;
+            if i >= qap.num_inputs {
+                // Only include witness variables in C(x)
+                let w_i = qap.w_polynomials[i].evaluate(&x);
+                c_val += witness_i * (setup.beta * u_i + setup.alpha * v_i + w_i);
+            }
+        }
+
+        a_val += setup.alpha + r * setup.delta;
+        b_val += setup.beta + s * setup.delta;
+        c_val /= setup.delta;
+        c_val += qap.target_polynomial.evaluate(&x) * h.evaluate(&x) / setup.delta + s * a_val + r * b_val - r * s * setup.delta;
+
+        
+        NILPProof {
+            proof_a: a_val,
+            proof_b: b_val,
+            proof_c: c_val,
+        }
+    }
+
+    /// NILP Verifier - verifies that a proof is valid for given public inputs
+    fn verify_linear<F: Field>(
+        qap: &QAP<F>,
+        public_inputs: &[F],
+        proof: &NILPProof<F>,
+        setup: &Groth16SetupParameters<F>
+    ) -> bool {
+        assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
+        
+        let x = setup.x_powers[1];
+        let mut sum = F::zero();
+        for i in 0..qap.num_inputs {
+            let u_i = qap.u_polynomials[i].evaluate(&x);
+            let v_i = qap.v_polynomials[i].evaluate(&x);
+            let w_i = qap.w_polynomials[i].evaluate(&x);
+            sum += public_inputs[i] * (setup.beta * u_i + setup.alpha * v_i + w_i); //In the linear case, we can ignore gamma
+        }
+        let lhs = proof.proof_a * proof.proof_b;
+        let rhs = setup.alpha * setup.beta + sum + setup.delta * proof.proof_c;
+        lhs == rhs
+    }
+
+    #[test]
+    fn test_setup_with_trivial_values() {
+        use ark_bn254::Fr;
+        use ark_ff::{Zero, One};
+        
+        let qap = create_test_qap::<Fr>();
+        
+        let alpha = Fr::zero();
+        let beta = Fr::zero();
+        let gamma = Fr::one(); 
+        let delta = Fr::one();
+        let x = Fr::from(4u32); // Evaluation point x=4 (satisfies our constraint)
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+        // Verify x_powers: should be [1, 4] since x = 4
+        assert_eq!(setup.x_powers[0], Fr::one());        // x^0 = 1
+        assert_eq!(setup.x_powers[1], Fr::from(4u32));   // x^1 = 4
+        
+        assert_eq!(setup.l_terms.len(), 1);
+        
+        assert_eq!(setup.k_terms.len(), 1);
+
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, Fr::zero(), Fr::zero());
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear(&qap, &[Fr::from(5u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+    }
+    
+    #[test]
+    fn test_setup_with_nontrivial_alpha_and_beta() {
+        use ark_bn254::Fr;
+        use ark_ff::{Zero, One};
+        
+        let qap = create_test_qap::<Fr>();
+        
+        // Use slightly less trivial toxic waste values
+        let alpha = Fr::from(2u32);   // Small non-zero value
+        let beta = Fr::from(3u32);    // Small non-zero value
+        let gamma = Fr::from(1u32);   // Small non-zero value (avoid zero to prevent division issues)
+        let delta = Fr::from(1u32);   // Small non-zero value
+        let x = Fr::from(4u32);       // Evaluation point x=4
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+
+        let r = Fr::zero();  // Small non-zero randomness
+        let s = Fr::zero();  // Small non-zero randomness
+
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+    }
+
+    #[test]
+    fn test_setup_with_nontrivial_delta_and_gamma() {
+        use ark_bn254::Fr;
+        use ark_ff::{Zero, One};
+        
+        let qap = create_test_qap::<Fr>();
+        
+        // Use trivial alpha and beta, but non-trivial gamma and delta
+        let alpha = Fr::zero();       // Trivial value
+        let beta = Fr::zero();        // Trivial value
+        let gamma = Fr::from(5u32);   // Non-trivial value
+        let delta = Fr::from(7u32);   // Non-trivial value
+        let x = Fr::from(4u32);       // Evaluation point x=4
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+        let r = Fr::zero();  // Zero randomness for simplicity
+        let s = Fr::zero();  // Zero randomness for simplicity
+
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+        
+    }
+
+    #[test]
+    fn test_setup_with_nontrivial_randomness() {
+        use ark_bn254::Fr;
+        use ark_ff::{Zero, One};
+        
+        let qap = create_test_qap::<Fr>();
+        
+        // Use trivial toxic waste parameters
+        let alpha = Fr::zero();       // Trivial value
+        let beta = Fr::zero();        // Trivial value
+        let gamma = Fr::one();        // Trivial value
+        let delta = Fr::one();        // Trivial value
+        let x = Fr::from(4u32);       // Evaluation point x=4
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+        // Use non-trivial randomness values
+        let r = Fr::from(11u32);  // Non-trivial randomness
+        let s = Fr::from(13u32);  // Non-trivial randomness
+
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+    }
+
+    #[test]
+    fn test_setup_with_true_randomness() {
+        use ark_bn254::Fr;
+        use ark_ff::{UniformRand, One};
+        
+        let qap = create_test_qap::<Fr>();
+        
+        // Use truly random toxic waste parameters as intended in real Groth16
+        let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<Fr>();
+        
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+        // Use truly random randomness values for the prover
+        let mut rng = ChaCha20Rng::from_entropy();
+        let r = Fr::rand(&mut rng);
+        let s = Fr::rand(&mut rng);
+
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with true randomness");
+        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input even with true randomness");
+    }
+
+    #[test]
+    fn test_setup_with_all_small_nontrivial_values() {
+        use ark_bn254::Fr;
+        use ark_ff::One;
+        
+        let qap = create_test_qap::<Fr>();
+        
+        // Use small but non-trivial values for all toxic waste parameters
+        let alpha = Fr::from(2u32);   // Small non-trivial value
+        let beta = Fr::from(3u32);    // Small non-trivial value
+        let gamma = Fr::from(7u32);   // Small non-trivial value
+        let delta = Fr::from(2u32);   // Small non-trivial value
+        let x = Fr::from(11u32);      // Small non-trivial evaluation point
+
+        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
+        
+        // Use small but non-trivial randomness values
+        let r = Fr::from(13u32);  // Small non-trivial randomness
+        let s = Fr::from(17u32);  // Small non-trivial randomness
+
+        // For x=11, our constraint x*1=4 is not satisfied, so we need a different witness
+        // Let's use witness [1, 4] but with the QAP evaluated at x=11
+        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with all small non-trivial values");
+        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+    }
+}
