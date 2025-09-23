@@ -37,13 +37,13 @@ pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     (alpha, beta, gamma, delta, x)
 }
 
-pub fn setup_linear<F: Field>(qap: QAP<F>) -> Groth16SetupParameters<F> {
+pub fn setup_linear<F: Field>(qap: &QAP<F>) -> Groth16SetupParameters<F> {
     let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<F>();
     setup_linear_with_params(qap, alpha, beta, gamma, delta, x)
 }
 
 pub fn setup_linear_with_params<F: Field>(
-    qap: QAP<F>, 
+    qap: &QAP<F>, 
     alpha: F, 
     beta: F, 
     gamma: F, 
@@ -259,8 +259,8 @@ mod tests {
         let delta = Fr::one();
         let x = Fr::from(4u32); // Evaluation point x=4 (satisfies our constraint)
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
         // Verify x_powers: should be [1, 4] since x = 4
         assert_eq!(setup.x_powers[0], Fr::one());        // x^0 = 1
         assert_eq!(setup.x_powers[1], Fr::from(4u32));   // x^1 = 4
@@ -288,8 +288,8 @@ mod tests {
         let delta = Fr::from(1u32);   // Small non-zero value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
 
         let r = Fr::zero();  // Small non-zero randomness
         let s = Fr::zero();  // Small non-zero randomness
@@ -313,8 +313,8 @@ mod tests {
         let delta = Fr::from(7u32);   // Non-trivial value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
         let r = Fr::zero();  // Zero randomness for simplicity
         let s = Fr::zero();  // Zero randomness for simplicity
 
@@ -338,8 +338,8 @@ mod tests {
         let delta = Fr::one();        // Trivial value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
         // Use non-trivial randomness values
         let r = Fr::from(11u32);  // Non-trivial randomness
         let s = Fr::from(13u32);  // Non-trivial randomness
@@ -363,8 +363,8 @@ mod tests {
         let delta = Fr::from(2u32);   // Small non-trivial value
         let x = Fr::from(11u32);      // Small non-trivial evaluation point
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
         // Use small but non-trivial randomness values
         let r = Fr::from(13u32);  // Small non-trivial randomness
         let s = Fr::from(17u32);  // Small non-trivial randomness
@@ -388,8 +388,8 @@ mod tests {
         let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<Fr>();
         
 
-        let setup = setup_linear_with_params(qap.clone(), alpha, beta, gamma, delta, x);
-        
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
         // Use truly random randomness values for the prover
         let mut rng = ChaCha20Rng::from_entropy();
         let r = Fr::rand(&mut rng);
@@ -454,12 +454,12 @@ mod tests {
     #[test]
     fn test_multi_input_qap() {
         use ark_bn254::Fr;
-        use ark_ff::{Zero, One};
+        use ark_ff::One;
         
         let qap = create_multi_input_qap::<Fr>();
 
-        let setup = setup_linear(qap.clone());
-        
+        let setup = setup_linear(&qap);
+
         // Create a satisfying witness for both constraints:
         // Constraint 1: x * y = z  -> let x=3, y=4, then z=12
         // Constraint 2: z * 1 = w  -> z=12, so w=12
@@ -541,12 +541,12 @@ mod tests {
     #[test]
     fn test_complex_qap() {
         use ark_bn254::Fr;
-        use ark_ff::{Zero, One};
+        use ark_ff::One;
         
         let qap = create_complex_qap::<Fr>();
         
 
-        let setup = setup_linear(qap.clone());
+        let setup = setup_linear(&qap);
         
         // Create a satisfying witness for polynomial: result = a*x^3 + b*x^2 + c*x + d
         // Let's use: x=3, a=2, b=1, c=4, d=5
@@ -598,7 +598,7 @@ mod tests {
         use ark_ff::One;
         
         let qap = create_complex_qap::<Fr>();
-        let setup = setup_linear(qap.clone());
+        let setup = setup_linear(&qap);
         
         // Use the same QAP structure but with different polynomial coefficients
         // This time: x=2, a=1, b=3, c=2, d=7
