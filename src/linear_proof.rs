@@ -4,6 +4,7 @@ use rand::{SeedableRng, RngCore};
 use ark_poly::Polynomial;
 
 use crate::quadratic_arithmetic_programs::QAP;
+use crate::polynomial_from_exponent_vector::evaluate_polynomial;
 
 /// Groth16 setup parameters
 /// 
@@ -81,8 +82,8 @@ pub fn setup_linear_with_params<F: Field>(
     
     // Generate x^i * t(x) / delta terms
     let mut x_powers_times_t_div_by_delta = Vec::with_capacity(degree);
-    if degree >= 2 {
-        for i in 0..degree-2 {
+    if degree >= 1 {
+        for i in 0..degree-1 {
             let x_power_i = x_powers[i];
             let t_val = qap.target_polynomial.evaluate(&x);
             x_powers_times_t_div_by_delta.push(x_power_i * t_val / delta);
@@ -175,8 +176,36 @@ mod tests {
         prove_linear_with_randomness(qap, witness, setup, r, s)
     }
 
-    /// NILP Prover with explicit randomness parameters for testing
     fn prove_linear_with_randomness<F: Field>(
+        qap: &QAP<F>, 
+        witness: &[F], 
+        setup: &Groth16SetupParameters<F>,
+        r: F,
+        s: F
+    ) -> NILPProof<F> {
+        let mut a = setup.alpha + setup.delta * r;
+        let mut b = setup.beta + setup.delta * s;
+        let mut b_g1 = setup.beta + setup.delta * s;
+
+        for i in 0..witness.len() {
+            a += evaluate_polynomial(&qap.u_polynomials[i], &setup.x_powers) * witness[i];
+            b += evaluate_polynomial(&qap.v_polynomials[i], &setup.x_powers) * witness[i];
+            b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &setup.x_powers) * witness[i];
+        }
+
+        let mut c = a * s + b_g1 * r - setup.delta * r * s;
+
+        for i in qap.num_inputs..qap.num_variables {
+            c += setup.k_terms[i - qap.num_inputs] * witness[i];
+        }
+
+        c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.x_powers_times_t_div_by_delta);
+
+        NILPProof { proof_a: a, proof_b: b, proof_c: c }
+    }
+
+    /// NILP Prover with explicit randomness parameters for testing
+    fn prove_linear_with_randomness_old<F: Field>(
         qap: &QAP<F>, 
         witness: &[F], 
         setup: &Groth16SetupParameters<F>,
@@ -215,9 +244,10 @@ mod tests {
         a_val += setup.alpha + r * setup.delta;
         b_val += setup.beta + s * setup.delta;
         c_val /= setup.delta;
-        c_val += qap.target_polynomial.evaluate(&x) * h.evaluate(&x) / setup.delta + s * a_val + r * b_val - r * s * setup.delta;
+        c_val += s * a_val + r * b_val - r * s * setup.delta;
 
-        
+        c_val += qap.target_polynomial.evaluate(&x) * h.evaluate(&x) / setup.delta;
+
         NILPProof {
             proof_a: a_val,
             proof_b: b_val,
@@ -225,7 +255,6 @@ mod tests {
         }
     }
 
-    /// NILP Verifier - verifies that a proof is valid for given public inputs
     fn verify_linear<F: Field>(
         qap: &QAP<F>,
         public_inputs: &[F],
@@ -233,16 +262,12 @@ mod tests {
         setup: &Groth16SetupParameters<F>
     ) -> bool {
         assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
-        let x = setup.x_powers[1];
         let mut sum = F::zero();
         for i in 0..qap.num_inputs {
-            let u_i = qap.u_polynomials[i].evaluate(&x);
-            let v_i = qap.v_polynomials[i].evaluate(&x);
-            let w_i = qap.w_polynomials[i].evaluate(&x);
-            sum += public_inputs[i] * (setup.beta * u_i + setup.alpha * v_i + w_i); //In the linear case, we can ignore gamma
+            sum += public_inputs[i] * setup.l_terms[i];
         }
         let lhs = proof.proof_a * proof.proof_b;
-        let rhs = setup.alpha * setup.beta + sum + setup.delta * proof.proof_c;
+        let rhs = setup.alpha * setup.beta + sum*setup.gamma + setup.delta * proof.proof_c;
         lhs == rhs
     }
 
@@ -372,6 +397,8 @@ mod tests {
         // For x=11, our constraint x*1=4 is not satisfied, so we need a different witness
         // Let's use witness [1, 4] but with the QAP evaluated at x=11
         let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        let other_proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear(&qap, &[Fr::one()], &other_proof, &setup), "Proof verification failed with all small non-trivial values");
         assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with all small non-trivial values");
         assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
@@ -449,6 +476,46 @@ mod tests {
             w_polynomials: vec![w_poly_0, w_poly_1, w_poly_2, w_poly_3, w_poly_4],
             target_polynomial: target_poly,
         }
+    }
+
+    #[test]
+    fn test_multi_input_qap_with_fixed_params() {
+        use ark_bn254::Fr;
+        use ark_ff::{Zero, One};
+        
+        let qap = create_multi_input_qap::<Fr>();
+
+        // Use fixed toxic waste parameters for reproducibility
+        let alpha = Fr::from(2u32);   // Small non-trivial value
+        let beta = Fr::from(3u32);    // Small non-trivial value
+        let gamma = Fr::from(1u32);   // Small non-trivial value
+        let delta = Fr::from(2u32);   // Small non-trivial value
+        let x = Fr::from(11u32);      // Small non-trivial evaluation point
+
+        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+
+        // Create a satisfying witness for both constraints:
+        // Constraint 1: x * y = z  -> let x=3, y=4, then z=12
+        // Constraint 2: z * 1 = w  -> z=12, so w=12
+        // Witness: [1, 3, 4, 12, 12] for variables [1, x, y, z, w]
+        let witness = vec![
+            Fr::one(),         // variable 0: constant 1 (public input)
+            Fr::from(3u32),    // variable 1: x = 3 (public input)
+            Fr::from(4u32),    // variable 2: y = 4 (witness variable)
+            Fr::from(12u32),   // variable 3: z = 12 (x * y = 3 * 4 = 12) (witness variable)
+            Fr::from(12u32),   // variable 4: w = 12 (z * 1 = 12 * 1 = 12) (witness variable)
+        ];
+
+        // Public inputs are [1, 3] for variables [1, x]
+        let public_inputs = vec![Fr::one(), Fr::from(3u32)];
+        let wrong_public_inputs = vec![Fr::one(), Fr::from(4u32)];
+
+        let proof = prove_linear_with_randomness(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
+        let old_proof = prove_linear_with_randomness_old(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
+        println!("New proof: {:?}", proof);
+        println!("Old proof: {:?}", old_proof);
+        assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
+        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
 
     #[test]
@@ -585,10 +652,13 @@ mod tests {
         let public_inputs = vec![Fr::one(), x, result];
 
         let proof = prove_linear(&qap, &witness, &setup);
-        
+        let other_proof = prove_linear_with_randomness(&qap, &witness, &setup, Fr::from(5u32), Fr::from(7u32));
+        assert!(verify_linear(&qap, &public_inputs, &other_proof, &setup), "Proof verification failed");
+
         assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Ultra-complex QAP proof verification failed");
-        
+
         let wrong_public_inputs = vec![Fr::one(), x, result + Fr::one()];
+        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Proof verification should fail with wrong public input");
         assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Ultra-complex QAP proof verification should fail with wrong public input");
     }
 
