@@ -6,18 +6,38 @@ use ark_poly::Polynomial;
 use crate::quadratic_arithmetic_programs::QAP;
 use crate::polynomial_from_exponent_vector::evaluate_polynomial;
 
+
+pub struct Sigma1<G> {
+    pub alpha: G,
+    pub beta: G,
+    pub delta: G,
+    pub x_vec: Vec<G>,
+    pub l_vec: Vec<G>,
+    pub k_vec: Vec<G>,
+    pub t_vec: Vec<G>,
+}
+
+pub struct Sigma2<G> {
+    pub beta: G,
+    pub gamma: G,
+    pub delta: G,
+    pub x_vec: Vec<G>,
+}
+
 /// Groth16 setup parameters
 /// 
 /// Uses dynamic sizing for flexibility in constraint system sizes
-pub struct Groth16SetupParameters<F: Field> {
-    pub alpha: F,
-    pub beta: F,
-    pub gamma: F,
-    pub delta: F,
-    pub x_powers: Vec<F>, // x^0, x^1, ..., x^{N-1}
-    pub l_terms: Vec<F>,  // L terms for input variables
-    pub k_terms: Vec<F>,  // M-L terms for auxiliary variables
-    pub x_powers_times_t_div_by_delta: Vec<F>, // x^i * t(x) / delta for i in 0..N
+pub struct Groth16SetupParameters<G1, G2> {
+    pub sigma1: Sigma1<G1>,
+    pub sigma2: Sigma2<G2>,
+    // pub alpha: F,
+    // pub beta: F,
+    // pub gamma: F,
+    // pub delta: F,
+    // pub x_powers: Vec<F>, // x^0, x^1, ..., x^{N-1}
+    // pub l_terms: Vec<F>,  // L terms for input variables
+    // pub k_terms: Vec<F>,  // M-L terms for auxiliary variables
+    // pub x_powers_times_t_div_by_delta: Vec<F>, // x^i * t(x) / delta for i in 0..N
 }
 
 /// Generate toxic waste parameters for Groth16 setup
@@ -38,7 +58,7 @@ pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     (alpha, beta, gamma, delta, x)
 }
 
-pub fn setup_linear<F: Field>(qap: &QAP<F>) -> Groth16SetupParameters<F> {
+pub fn setup_linear<F: Field>(qap: &QAP<F>) -> Groth16SetupParameters<F,F> {
     let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<F>();
     setup_linear_with_params(qap, alpha, beta, gamma, delta, x)
 }
@@ -50,7 +70,7 @@ pub fn setup_linear_with_params<F: Field>(
     gamma: F, 
     delta: F, 
     x: F
-) -> Groth16SetupParameters<F> {
+) -> Groth16SetupParameters<F,F> {
     
     // Generate powers of x up to the degree needed for the QAP
     let degree = qap.target_polynomial.degree();
@@ -91,14 +111,21 @@ pub fn setup_linear_with_params<F: Field>(
     }
     
     Groth16SetupParameters {
-        alpha,
-        beta,
-        gamma,
-        delta,
-        x_powers,
-        l_terms,
-        k_terms,
-        x_powers_times_t_div_by_delta,
+        sigma1: Sigma1 {
+            alpha,
+            beta,
+            delta,
+            x_vec: x_powers.clone(),
+            l_vec: l_terms,
+            k_vec: k_terms,
+            t_vec: x_powers_times_t_div_by_delta
+        },
+        sigma2: Sigma2 {
+            beta,
+            gamma,
+            delta,
+            x_vec: x_powers
+        },
     }
 }
 
@@ -157,19 +184,19 @@ mod tests {
 
     /// NILP Proof structure
     #[derive(Debug, Clone)]
-    struct NILPProof<F: Field> {
+    struct NILPProof<G1, G2> {
         /// Proof elements for the linear proof
-        pub proof_a: F,  // Evaluation of polynomial A at secret point
-        pub proof_b: F,  // Evaluation of polynomial B at secret point  
-        pub proof_c: F,  // Evaluation of polynomial C at secret point
+        pub proof_a: G1,  // Evaluation of polynomial A at secret point
+        pub proof_b: G2,  // Evaluation of polynomial B at secret point  
+        pub proof_c: G1,  // Evaluation of polynomial C at secret point
     }
 
     /// NILP Prover - generates a proof that the witness satisfies the QAP
     fn prove_linear<F: Field>(
         qap: &QAP<F>, 
         witness: &[F], 
-        setup: &Groth16SetupParameters<F>
-    ) -> NILPProof<F> {
+        setup: &Groth16SetupParameters<F,F>
+    ) -> NILPProof<F,F> {
         let mut rng = &mut ChaCha20Rng::from_entropy();
         let r: F = F::rand(&mut rng);
         let s: F = F::rand(&mut rng);
@@ -179,95 +206,45 @@ mod tests {
     fn prove_linear_with_randomness<F: Field>(
         qap: &QAP<F>, 
         witness: &[F], 
-        setup: &Groth16SetupParameters<F>,
+        setup: &Groth16SetupParameters<F,F>,
         r: F,
         s: F
-    ) -> NILPProof<F> {
-        let mut a = setup.alpha + setup.delta * r;
-        let mut b = setup.beta + setup.delta * s;
-        let mut b_g1 = setup.beta + setup.delta * s;
+    ) -> NILPProof<F,F> {
+        let mut a = setup.sigma1.alpha + setup.sigma1.delta * r;
+        let mut b = setup.sigma2.beta + setup.sigma2.delta * s;
+        let mut b_g1 = setup.sigma1.beta + setup.sigma1.delta * s;
 
         for i in 0..witness.len() {
-            a += evaluate_polynomial(&qap.u_polynomials[i], &setup.x_powers) * witness[i];
-            b += evaluate_polynomial(&qap.v_polynomials[i], &setup.x_powers) * witness[i];
-            b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &setup.x_powers) * witness[i];
+            a += evaluate_polynomial(&qap.u_polynomials[i], &setup.sigma1.x_vec) * witness[i];
+            b += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma2.x_vec) * witness[i];
+            b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma1.x_vec) * witness[i];
         }
 
-        let mut c = a * s + b_g1 * r - setup.delta * r * s;
+        let mut c = a * s + b_g1 * r - setup.sigma1.delta * r * s;
 
         for i in qap.num_inputs..qap.num_variables {
-            c += setup.k_terms[i - qap.num_inputs] * witness[i];
+            c += setup.sigma1.k_vec[i - qap.num_inputs] * witness[i];
         }
 
-        c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.x_powers_times_t_div_by_delta);
+        c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.sigma1.t_vec);
 
         NILPProof { proof_a: a, proof_b: b, proof_c: c }
     }
 
-    /// NILP Prover with explicit randomness parameters for testing
-    fn prove_linear_with_randomness_old<F: Field>(
-        qap: &QAP<F>, 
-        witness: &[F], 
-        setup: &Groth16SetupParameters<F>,
-        r: F,
-        s: F
-    ) -> NILPProof<F> {
-        assert_eq!(witness.len(), qap.num_variables, "Witness length must match QAP variables");
-        
-        let x = setup.x_powers[1]; // The secret x value (x^1)
-
-        // Calculating h(x) = (U(x)*V(x) - W(x)) / t(x) is actually NOT
-        // needed, since we only use it in the context of h(x)t(x), which
-        // can be computed directly from U(x), V(x), W(x).
-        // We keep it like this for now, since we already implemented it, 
-        // and it gives us a free check that the witness satisfies the QAP.
-        let h: DensePolynomial<F> = qap.division_polynomial(witness);
-
-        // Compute A(x), B(x), C(x) using the witness
-        let mut a_val = F::zero();
-        let mut b_val = F::zero();
-        let mut c_val = F::zero();
-
-        for i in 0..qap.num_variables {
-            let witness_i = witness[i];
-            let u_i = qap.u_polynomials[i].evaluate(&x);
-            let v_i = qap.v_polynomials[i].evaluate(&x);
-            a_val += witness_i * u_i;
-            b_val += witness_i * v_i;
-            if i >= qap.num_inputs {
-                // Only include witness variables in C(x)
-                let w_i = qap.w_polynomials[i].evaluate(&x);
-                c_val += witness_i * (setup.beta * u_i + setup.alpha * v_i + w_i);
-            }
-        }
-
-        a_val += setup.alpha + r * setup.delta;
-        b_val += setup.beta + s * setup.delta;
-        c_val /= setup.delta;
-        c_val += s * a_val + r * b_val - r * s * setup.delta;
-
-        c_val += qap.target_polynomial.evaluate(&x) * h.evaluate(&x) / setup.delta;
-
-        NILPProof {
-            proof_a: a_val,
-            proof_b: b_val,
-            proof_c: c_val,
-        }
-    }
 
     fn verify_linear<F: Field>(
         qap: &QAP<F>,
         public_inputs: &[F],
-        proof: &NILPProof<F>,
-        setup: &Groth16SetupParameters<F>
+        proof: &NILPProof<F,F>,
+        setup: &Groth16SetupParameters<F,F>
     ) -> bool {
         assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
         let mut sum = F::zero();
         for i in 0..qap.num_inputs {
-            sum += public_inputs[i] * setup.l_terms[i];
+            sum += public_inputs[i] * setup.sigma1.l_vec[i];
         }
         let lhs = proof.proof_a * proof.proof_b;
-        let rhs = setup.alpha * setup.beta + sum*setup.gamma + setup.delta * proof.proof_c;
+        let rhs = setup.sigma1.alpha * setup.sigma2.beta + sum * setup.sigma2.gamma + setup.sigma2.delta * proof.proof_c;
         lhs == rhs
     }
 
@@ -285,14 +262,6 @@ mod tests {
         let x = Fr::from(4u32); // Evaluation point x=4 (satisfies our constraint)
 
         let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
-
-        // Verify x_powers: should be [1, 4] since x = 4
-        assert_eq!(setup.x_powers[0], Fr::one());        // x^0 = 1
-        assert_eq!(setup.x_powers[1], Fr::from(4u32));   // x^1 = 4
-        
-        assert_eq!(setup.l_terms.len(), 1);
-        
-        assert_eq!(setup.k_terms.len(), 1);
 
         let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, Fr::zero(), Fr::zero());
         assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
@@ -511,9 +480,6 @@ mod tests {
         let wrong_public_inputs = vec![Fr::one(), Fr::from(4u32)];
 
         let proof = prove_linear_with_randomness(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
-        let old_proof = prove_linear_with_randomness_old(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
-        println!("New proof: {:?}", proof);
-        println!("Old proof: {:?}", old_proof);
         assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
         assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
