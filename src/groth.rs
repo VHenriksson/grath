@@ -54,6 +54,7 @@ pub fn verify<P: Pairing>(
     verify_linear::<P>(qap, public_inputs, proof, setup)
 }
 
+#[cfg(test)]
 mod tests {
 
     use crate::test_functions::{complex_qap, simple_qap};
