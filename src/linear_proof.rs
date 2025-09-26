@@ -1,7 +1,9 @@
-use ark_ff::Field;
+use ark_ec::pairing::Pairing;
+use ark_ff::{Field, UniformRand, Zero, One};
 use rand_chacha::ChaCha20Rng;
 use rand::{SeedableRng, RngCore};
 use ark_poly::Polynomial;
+use std::ops::{AddAssign, Mul, Sub, SubAssign, Div};
 
 use crate::quadratic_arithmetic_programs::QAP;
 use crate::polynomial_from_exponent_vector::evaluate_polynomial;
@@ -58,82 +60,213 @@ pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     (alpha, beta, gamma, delta, x)
 }
 
-pub fn setup_linear<F: Field>(qap: &QAP<F>) -> Groth16SetupParameters<F,F> {
-    let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<F>();
-    setup_linear_with_params(qap, alpha, beta, gamma, delta, x)
+pub fn setup_linear<E: BasicPairing>(qap: &QAP<E::ScalarField>) -> Groth16SetupParameters<E::G1, E::G2> {
+    let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<E::ScalarField>();
+    setup_linear_with_params::<E>(qap, alpha, beta, gamma, delta, x)
 }
 
-pub fn setup_linear_with_params<F: Field>(
-    qap: &QAP<F>, 
-    alpha: F, 
-    beta: F, 
-    gamma: F, 
-    delta: F, 
-    x: F
-) -> Groth16SetupParameters<F,F> {
+pub fn setup_linear_with_params<E: BasicPairing>(
+    qap: &QAP<E::ScalarField>,
+    alpha: E::ScalarField,
+    beta: E::ScalarField,
+    gamma: E::ScalarField,
+    delta: E::ScalarField,
+    x: E::ScalarField
+) -> Groth16SetupParameters<E::G1, E::G2> {
+    let alpha_1 = E::G1::generator() * alpha;
+    let beta_1 = E::G1::generator() * beta;
+    let gamma_1 = E::G1::generator() * gamma;
+    let delta_1 = E::G1::generator() * delta;
+    let alpha_2 = E::G2::generator() * alpha;
+    let beta_2 = E::G2::generator() * beta;
+    let gamma_2 = E::G2::generator() * gamma;
+    let delta_2 = E::G2::generator() * delta;
     
     // Generate powers of x up to the degree needed for the QAP
     let degree = qap.target_polynomial.degree();
-    let mut x_powers = Vec::with_capacity(degree + 1);
-    let mut current_power = F::one();
+    let mut x_powers_1 = Vec::with_capacity(degree + 1);
+    let mut x_powers_2 = Vec::with_capacity(degree + 1);
+    let mut current_power = E::ScalarField::one();
     for _ in 0..=degree {
-        x_powers.push(current_power);
+        x_powers_1.push(E::G1::generator() * current_power);
+        x_powers_2.push(E::G2::generator() * current_power);
         current_power *= x;
     }
     
     // Generate L terms for input variables
-    let mut l_terms = vec![F::zero(); qap.num_inputs];
+    let mut l_terms = vec![E::G1::zero(); qap.num_inputs];
     for i in 0..qap.num_inputs {
         // For Groth16, L terms are typically: (beta * u_i(x) + alpha * v_i(x) + w_i(x)) / gamma
         let u_val = qap.u_polynomials[i].evaluate(&x);
         let v_val = qap.v_polynomials[i].evaluate(&x);
         let w_val = qap.w_polynomials[i].evaluate(&x);
-        l_terms[i] = (beta * u_val + alpha * v_val + w_val) / gamma;
+        l_terms[i] = (beta_1 * u_val + alpha_1 * v_val + E::G1::generator() * w_val) / gamma_1;
     }
     
     // Generate K terms for auxiliary variables (witness variables)
-    let mut k_terms = vec![F::zero(); qap.num_variables - qap.num_inputs];
+    let mut k_terms = vec![E::G1::zero(); qap.num_variables - qap.num_inputs];
     for i in qap.num_inputs..qap.num_variables {
         let u_val = qap.u_polynomials[i].evaluate(&x);
         let v_val = qap.v_polynomials[i].evaluate(&x);
         let w_val = qap.w_polynomials[i].evaluate(&x);
-        k_terms[i - qap.num_inputs] = (beta * u_val + alpha * v_val + w_val) / delta;
+        k_terms[i - qap.num_inputs] = (beta_1 * u_val + alpha_1 * v_val + E::G1::generator() * w_val) / delta_1;
     }
     
     // Generate x^i * t(x) / delta terms
     let mut x_powers_times_t_div_by_delta = Vec::with_capacity(degree);
     if degree >= 1 {
         for i in 0..degree-1 {
-            let x_power_i = x_powers[i];
+            let x_power_i = x_powers_1[i];
             let t_val = qap.target_polynomial.evaluate(&x);
-            x_powers_times_t_div_by_delta.push(x_power_i * t_val / delta);
+            x_powers_times_t_div_by_delta.push(x_power_i * t_val / delta_1);
         }
     }
     
     Groth16SetupParameters {
         sigma1: Sigma1 {
-            alpha,
-            beta,
-            delta,
-            x_vec: x_powers.clone(),
+            alpha: alpha_1,
+            beta: beta_1,
+            delta: delta_1,
+            x_vec: x_powers_1.clone(),
             l_vec: l_terms,
             k_vec: k_terms,
             t_vec: x_powers_times_t_div_by_delta
         },
         sigma2: Sigma2 {
-            beta,
-            gamma,
-            delta,
-            x_vec: x_powers
+            beta: beta_2,
+            gamma: gamma_2,
+            delta: delta_2,
+            x_vec: x_powers_2
         },
     }
 }
+
+pub trait BasicPairingGroup<ScalarField: Field>: 
+    Copy + Clone + Zero + 
+    AddAssign<Self> + SubAssign<Self> + Sub<Self, Output = Self> + 
+    Mul<ScalarField, Output = Self> + Div<Self, Output = Self>
+{
+    fn generator() -> Self;
+    fn inverse(&self) -> Self;
+}
+
+pub trait BasicPairing {
+    /// The scalar field for the pairing groups
+    type ScalarField: Field;
+    
+    /// First pairing group - must be a module over ScalarField
+    type G1: BasicPairingGroup<Self::ScalarField>;
+    
+    /// Second pairing group - must be a module over ScalarField  
+    type G2: BasicPairingGroup<Self::ScalarField>;
+    
+    /// Target field for pairing results
+    type TargetField: Field;
+    
+    /// Pairing function: takes one element from G1, one from G2, returns element in TargetField
+    fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetField;
+}
+
+/// NILP Proof structure
+#[derive(Debug, Clone)]
+struct NILPProof<G1, G2> {
+    /// Proof elements for the linear proof
+    pub proof_a: G1,  // Evaluation of polynomial A at secret point
+    pub proof_b: G2,  // Evaluation of polynomial B at secret point  
+    pub proof_c: G1,  // Evaluation of polynomial C at secret point
+}
+
+/// NILP Prover - generates a proof that the witness satisfies the QAP
+fn prove_linear<E: BasicPairing>(
+    qap: &QAP<E::ScalarField>, 
+    witness: &[E::ScalarField], 
+    setup: &Groth16SetupParameters<E::G1,E::G2>
+) -> NILPProof<E::G1,E::G2> {
+    let mut rng = &mut ChaCha20Rng::from_entropy();
+    let r: E::ScalarField = E::ScalarField::rand(&mut rng);
+    let s: E::ScalarField = E::ScalarField::rand(&mut rng);
+    prove_linear_with_randomness::<E>(qap, witness, setup, r, s)
+}
+
+fn prove_linear_with_randomness<E: BasicPairing>(
+    qap: &QAP<E::ScalarField>, 
+    witness: &[E::ScalarField], 
+    setup: &Groth16SetupParameters<E::G1,E::G2>,
+    r: E::ScalarField,
+    s: E::ScalarField
+) -> NILPProof<E::G1,E::G2> {
+    let mut a = setup.sigma1.alpha + setup.sigma1.delta * r;
+    let mut b = setup.sigma2.beta + setup.sigma2.delta * s;
+    let mut b_g1 = setup.sigma1.beta + setup.sigma1.delta * s;
+
+    for i in 0..witness.len() {
+        a += evaluate_polynomial(&qap.u_polynomials[i], &setup.sigma1.x_vec) * witness[i];
+        b += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma2.x_vec) * witness[i];
+        b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma1.x_vec) * witness[i];
+    }
+
+    let mut c = a * s + b_g1 * r - setup.sigma1.delta * r * s;
+
+    for i in qap.num_inputs..qap.num_variables {
+        c += setup.sigma1.k_vec[i - qap.num_inputs] * witness[i];
+    }
+
+    c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.sigma1.t_vec);
+
+    NILPProof { proof_a: a, proof_b: b, proof_c: c }
+}
+
+
+fn verify_linear<E: BasicPairing>(
+    qap: &QAP<E::ScalarField>,
+    public_inputs: &[E::ScalarField],
+    proof: &NILPProof<E::G1,E::G2>,
+    setup: &Groth16SetupParameters<E::G1,E::G2>
+) -> bool {
+    assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
+    let mut sum = E::G1::zero();
+    for i in 0..qap.num_inputs {
+        sum += setup.sigma1.l_vec[i] * public_inputs[i];
+    }
+    let lhs = E::pairing(proof.proof_a, proof.proof_b);
+    let rhs = E::pairing(setup.sigma1.alpha, setup.sigma2.beta) + E::pairing(sum, setup.sigma2.gamma) + E::pairing(proof.proof_c, setup.sigma2.delta);
+    lhs == rhs
+}
+
 
 #[cfg(test)]
 mod tests {
     use ark_poly::univariate::DensePolynomial;
 
     use super::*;
+
+
+    // A fake pairing implementation for testing purposes
+    pub struct LinearPairing<F: Field> {
+        _phantom: std::marker::PhantomData<F>,
+    }
+
+    impl<F: Field> BasicPairingGroup<F> for F {
+        fn generator() -> Self {
+            F::one()
+        }
+        
+        fn inverse(&self) -> Self {
+            self.inverse().unwrap()
+        }
+    }
+
+    impl<F: Field> BasicPairing for LinearPairing<F> {
+        type ScalarField = F;
+        type G1 = F;
+        type G2 = F;
+        type TargetField = F;
+        
+        fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetField {
+            g1_elem * g2_elem
+        }
+    }
+
 
     /// Create a QAP that represents the constraint: x * 1 = 4
     /// Variables: [1, x] where:
@@ -181,73 +314,6 @@ mod tests {
         assert_eq!(unique_count, 5, "Expected no collisions in large field, but got {} unique elements", unique_count);
     }
 
-
-    /// NILP Proof structure
-    #[derive(Debug, Clone)]
-    struct NILPProof<G1, G2> {
-        /// Proof elements for the linear proof
-        pub proof_a: G1,  // Evaluation of polynomial A at secret point
-        pub proof_b: G2,  // Evaluation of polynomial B at secret point  
-        pub proof_c: G1,  // Evaluation of polynomial C at secret point
-    }
-
-    /// NILP Prover - generates a proof that the witness satisfies the QAP
-    fn prove_linear<F: Field>(
-        qap: &QAP<F>, 
-        witness: &[F], 
-        setup: &Groth16SetupParameters<F,F>
-    ) -> NILPProof<F,F> {
-        let mut rng = &mut ChaCha20Rng::from_entropy();
-        let r: F = F::rand(&mut rng);
-        let s: F = F::rand(&mut rng);
-        prove_linear_with_randomness(qap, witness, setup, r, s)
-    }
-
-    fn prove_linear_with_randomness<F: Field>(
-        qap: &QAP<F>, 
-        witness: &[F], 
-        setup: &Groth16SetupParameters<F,F>,
-        r: F,
-        s: F
-    ) -> NILPProof<F,F> {
-        let mut a = setup.sigma1.alpha + setup.sigma1.delta * r;
-        let mut b = setup.sigma2.beta + setup.sigma2.delta * s;
-        let mut b_g1 = setup.sigma1.beta + setup.sigma1.delta * s;
-
-        for i in 0..witness.len() {
-            a += evaluate_polynomial(&qap.u_polynomials[i], &setup.sigma1.x_vec) * witness[i];
-            b += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma2.x_vec) * witness[i];
-            b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &setup.sigma1.x_vec) * witness[i];
-        }
-
-        let mut c = a * s + b_g1 * r - setup.sigma1.delta * r * s;
-
-        for i in qap.num_inputs..qap.num_variables {
-            c += setup.sigma1.k_vec[i - qap.num_inputs] * witness[i];
-        }
-
-        c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.sigma1.t_vec);
-
-        NILPProof { proof_a: a, proof_b: b, proof_c: c }
-    }
-
-
-    fn verify_linear<F: Field>(
-        qap: &QAP<F>,
-        public_inputs: &[F],
-        proof: &NILPProof<F,F>,
-        setup: &Groth16SetupParameters<F,F>
-    ) -> bool {
-        assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
-        let mut sum = F::zero();
-        for i in 0..qap.num_inputs {
-            sum += public_inputs[i] * setup.sigma1.l_vec[i];
-        }
-        let lhs = proof.proof_a * proof.proof_b;
-        let rhs = setup.sigma1.alpha * setup.sigma2.beta + sum * setup.sigma2.gamma + setup.sigma2.delta * proof.proof_c;
-        lhs == rhs
-    }
-
     #[test]
     fn test_setup_with_trivial_values() {
         use ark_bn254::Fr;
@@ -261,11 +327,11 @@ mod tests {
         let delta = Fr::one();
         let x = Fr::from(4u32); // Evaluation point x=4 (satisfies our constraint)
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, Fr::zero(), Fr::zero());
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
-        assert!(!verify_linear(&qap, &[Fr::from(5u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, Fr::zero(), Fr::zero());
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(5u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
     
     #[test]
@@ -282,15 +348,15 @@ mod tests {
         let delta = Fr::from(1u32);   // Small non-zero value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
 
         let r = Fr::zero();  // Small non-zero randomness
         let s = Fr::zero();  // Small non-zero randomness
 
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
-        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
 
     #[test]
@@ -307,15 +373,15 @@ mod tests {
         let delta = Fr::from(7u32);   // Non-trivial value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
         let r = Fr::zero();  // Zero randomness for simplicity
         let s = Fr::zero();  // Zero randomness for simplicity
 
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
-        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
-        
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+
     }
 
     #[test]
@@ -332,15 +398,15 @@ mod tests {
         let delta = Fr::one();        // Trivial value
         let x = Fr::from(4u32);       // Evaluation point x=4
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
         // Use non-trivial randomness values
         let r = Fr::from(11u32);  // Non-trivial randomness
         let s = Fr::from(13u32);  // Non-trivial randomness
 
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
-        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
 
     #[test]
@@ -357,7 +423,7 @@ mod tests {
         let delta = Fr::from(2u32);   // Small non-trivial value
         let x = Fr::from(11u32);      // Small non-trivial evaluation point
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
         // Use small but non-trivial randomness values
         let r = Fr::from(13u32);  // Small non-trivial randomness
@@ -365,11 +431,11 @@ mod tests {
 
         // For x=11, our constraint x*1=4 is not satisfied, so we need a different witness
         // Let's use witness [1, 4] but with the QAP evaluated at x=11
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        let other_proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        assert!(verify_linear(&qap, &[Fr::one()], &other_proof, &setup), "Proof verification failed with all small non-trivial values");
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with all small non-trivial values");
-        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        let other_proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &other_proof, &setup), "Proof verification failed with all small non-trivial values");
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with all small non-trivial values");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
 
 
@@ -382,18 +448,17 @@ mod tests {
         
         // Use truly random toxic waste parameters as intended in real Groth16
         let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<Fr>();
-        
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
         // Use truly random randomness values for the prover
         let mut rng = ChaCha20Rng::from_entropy();
         let r = Fr::rand(&mut rng);
         let s = Fr::rand(&mut rng);
 
-        let proof = prove_linear_with_randomness(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
-        assert!(verify_linear(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with true randomness");
-        assert!(!verify_linear(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input even with true randomness");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed with true randomness");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input even with true randomness");
     }
 
     /// Create a QAP with multiple public inputs:
@@ -461,7 +526,7 @@ mod tests {
         let delta = Fr::from(2u32);   // Small non-trivial value
         let x = Fr::from(11u32);      // Small non-trivial evaluation point
 
-        let setup = setup_linear_with_params(&qap, alpha, beta, gamma, delta, x);
+        let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
         // Create a satisfying witness for both constraints:
         // Constraint 1: x * y = z  -> let x=3, y=4, then z=12
@@ -479,9 +544,9 @@ mod tests {
         let public_inputs = vec![Fr::one(), Fr::from(3u32)];
         let wrong_public_inputs = vec![Fr::one(), Fr::from(4u32)];
 
-        let proof = prove_linear_with_randomness(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
-        assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
-        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
+        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &witness, &setup, Fr::from(13u32), Fr::from(17u32));
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
 
     #[test]
@@ -491,7 +556,7 @@ mod tests {
         
         let qap = create_multi_input_qap::<Fr>();
 
-        let setup = setup_linear(&qap);
+        let setup = setup_linear::<LinearPairing<Fr>>(&qap);
 
         // Create a satisfying witness for both constraints:
         // Constraint 1: x * y = z  -> let x=3, y=4, then z=12
@@ -509,9 +574,9 @@ mod tests {
         let public_inputs = vec![Fr::one(), Fr::from(3u32)];
         let wrong_public_inputs = vec![Fr::one(), Fr::from(4u32)];
 
-        let proof = prove_linear(&qap, &witness, &setup);
-        assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
-        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
+        let proof = prove_linear::<LinearPairing<Fr>>(&qap, &witness, &setup);
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &public_inputs, &proof, &setup), "Multi-input proof verification failed");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &wrong_public_inputs, &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
 
     /// Create a complex QAP for testing:
@@ -579,8 +644,8 @@ mod tests {
         let qap = create_complex_qap::<Fr>();
         
 
-        let setup = setup_linear(&qap);
-        
+        let setup = setup_linear::<LinearPairing<Fr>>(&qap);
+
         // Create a satisfying witness for polynomial: result = a*x^3 + b*x^2 + c*x + d
         // Let's use: x=3, a=2, b=1, c=4, d=5
         // Expected: result = 2*27 + 1*9 + 4*3 + 5 = 54 + 9 + 12 + 5 = 80
@@ -617,15 +682,15 @@ mod tests {
         // Public inputs: [1, x, result] - we know x and the final result, but not the coefficients
         let public_inputs = vec![Fr::one(), x, result];
 
-        let proof = prove_linear(&qap, &witness, &setup);
-        let other_proof = prove_linear_with_randomness(&qap, &witness, &setup, Fr::from(5u32), Fr::from(7u32));
-        assert!(verify_linear(&qap, &public_inputs, &other_proof, &setup), "Proof verification failed");
+        let proof = prove_linear::<LinearPairing<Fr>>(&qap, &witness, &setup);
+        let other_proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &witness, &setup, Fr::from(5u32), Fr::from(7u32));
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &public_inputs, &other_proof, &setup), "Proof verification failed");
 
-        assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Ultra-complex QAP proof verification failed");
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &public_inputs, &proof, &setup), "Ultra-complex QAP proof verification failed");
 
         let wrong_public_inputs = vec![Fr::one(), x, result + Fr::one()];
-        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Proof verification should fail with wrong public input");
-        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Ultra-complex QAP proof verification should fail with wrong public input");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &wrong_public_inputs, &proof, &setup), "Proof verification should fail with wrong public input");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &wrong_public_inputs, &proof, &setup), "Ultra-complex QAP proof verification should fail with wrong public input");
     }
 
     #[test]
@@ -634,8 +699,8 @@ mod tests {
         use ark_ff::One;
         
         let qap = create_complex_qap::<Fr>();
-        let setup = setup_linear(&qap);
-        
+        let setup = setup_linear::<LinearPairing<Fr>>(&qap);
+
         // Use the same QAP structure but with different polynomial coefficients
         // This time: x=2, a=1, b=3, c=2, d=7
         // Expected: result = 1*8 + 3*4 + 2*2 + 7 = 8 + 12 + 4 + 7 = 31
@@ -672,12 +737,13 @@ mod tests {
         // Public inputs: [1, x, result] - different values than the previous test
         let public_inputs = vec![Fr::one(), x, result];
 
-        let proof = prove_linear(&qap, &witness, &setup);
-        
-        assert!(verify_linear(&qap, &public_inputs, &proof, &setup), "Complex QAP proof verification failed with different witness");
-        
+        let proof = prove_linear::<LinearPairing<Fr>>(&qap, &witness, &setup);
+
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &public_inputs, &proof, &setup), "Complex QAP proof verification failed with different witness");
+
         // Test with wrong result to ensure security
         let wrong_public_inputs = vec![Fr::one(), x, Fr::from(999u32)];
-        assert!(!verify_linear(&qap, &wrong_public_inputs, &proof, &setup), "Complex QAP should reject wrong result");
+        assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &wrong_public_inputs, &proof, &setup), "Complex QAP should reject wrong result");
     }
+
 }
