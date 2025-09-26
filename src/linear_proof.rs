@@ -1,9 +1,8 @@
-use ark_ec::pairing::Pairing;
 use ark_ff::{Field, UniformRand, Zero, One};
 use rand_chacha::ChaCha20Rng;
 use rand::{SeedableRng, RngCore};
 use ark_poly::Polynomial;
-use std::ops::{AddAssign, Mul, Sub, SubAssign, Div};
+use std::ops::{AddAssign, Mul, Sub, SubAssign};
 
 use crate::quadratic_arithmetic_programs::QAP;
 use crate::polynomial_from_exponent_vector::evaluate_polynomial;
@@ -56,7 +55,7 @@ pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     let gamma = F::rand(&mut rng);
     let delta = F::rand(&mut rng);
     let x = F::rand(&mut rng);
-    
+
     (alpha, beta, gamma, delta, x)
 }
 
@@ -100,7 +99,8 @@ pub fn setup_linear_with_params<E: BasicPairing>(
         let u_val = qap.u_polynomials[i].evaluate(&x);
         let v_val = qap.v_polynomials[i].evaluate(&x);
         let w_val = qap.w_polynomials[i].evaluate(&x);
-        l_terms[i] = (beta_1 * u_val + alpha_1 * v_val + E::G1::generator() * w_val) / gamma_1;
+        let scalar_term = (beta * u_val + alpha * v_val + w_val) / gamma;
+        l_terms[i] = E::G1::generator() * scalar_term;
     }
     
     // Generate K terms for auxiliary variables (witness variables)
@@ -109,7 +109,8 @@ pub fn setup_linear_with_params<E: BasicPairing>(
         let u_val = qap.u_polynomials[i].evaluate(&x);
         let v_val = qap.v_polynomials[i].evaluate(&x);
         let w_val = qap.w_polynomials[i].evaluate(&x);
-        k_terms[i - qap.num_inputs] = (beta_1 * u_val + alpha_1 * v_val + E::G1::generator() * w_val) / delta_1;
+        let scalar_term = (beta * u_val + alpha * v_val + w_val) / delta;
+        k_terms[i - qap.num_inputs] = E::G1::generator() * scalar_term;
     }
     
     // Generate x^i * t(x) / delta terms
@@ -118,10 +119,10 @@ pub fn setup_linear_with_params<E: BasicPairing>(
         for i in 0..degree-1 {
             let x_power_i = x_powers_1[i];
             let t_val = qap.target_polynomial.evaluate(&x);
-            x_powers_times_t_div_by_delta.push(x_power_i * t_val / delta_1);
+            let scalar_term = t_val / delta;
+            x_powers_times_t_div_by_delta.push(x_power_i * scalar_term);
         }
     }
-    
     Groth16SetupParameters {
         sigma1: Sigma1 {
             alpha: alpha_1,
@@ -142,12 +143,11 @@ pub fn setup_linear_with_params<E: BasicPairing>(
 }
 
 pub trait BasicPairingGroup<ScalarField: Field>: 
-    Copy + Clone + Zero + 
+    Copy + Clone + Zero + std::fmt::Debug +
     AddAssign<Self> + SubAssign<Self> + Sub<Self, Output = Self> + 
-    Mul<ScalarField, Output = Self> + Div<Self, Output = Self>
+    Mul<ScalarField, Output = Self>
 {
     fn generator() -> Self;
-    fn inverse(&self) -> Self;
 }
 
 pub trait BasicPairing {
@@ -161,15 +161,15 @@ pub trait BasicPairing {
     type G2: BasicPairingGroup<Self::ScalarField>;
     
     /// Target field for pairing results
-    type TargetField: Field;
+    type TargetGroup: std::ops::Add<Output = Self::TargetGroup> + PartialEq + std::fmt::Debug;
     
     /// Pairing function: takes one element from G1, one from G2, returns element in TargetField
-    fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetField;
+    fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetGroup;
 }
 
 /// NILP Proof structure
 #[derive(Debug, Clone)]
-struct NILPProof<G1, G2> {
+pub struct NILPProof<G1, G2> {
     /// Proof elements for the linear proof
     pub proof_a: G1,  // Evaluation of polynomial A at secret point
     pub proof_b: G2,  // Evaluation of polynomial B at secret point  
@@ -177,7 +177,7 @@ struct NILPProof<G1, G2> {
 }
 
 /// NILP Prover - generates a proof that the witness satisfies the QAP
-fn prove_linear<E: BasicPairing>(
+pub fn prove_linear<E: BasicPairing>(
     qap: &QAP<E::ScalarField>, 
     witness: &[E::ScalarField], 
     setup: &Groth16SetupParameters<E::G1,E::G2>
@@ -217,7 +217,7 @@ fn prove_linear_with_randomness<E: BasicPairing>(
 }
 
 
-fn verify_linear<E: BasicPairing>(
+pub fn verify_linear<E: BasicPairing>(
     qap: &QAP<E::ScalarField>,
     public_inputs: &[E::ScalarField],
     proof: &NILPProof<E::G1,E::G2>,
@@ -242,28 +242,74 @@ mod tests {
 
 
     // A fake pairing implementation for testing purposes
-    pub struct LinearPairing<F: Field> {
+    struct LinearPairing<F: Field> {
         _phantom: std::marker::PhantomData<F>,
     }
 
-    impl<F: Field> BasicPairingGroup<F> for F {
-        fn generator() -> Self {
-            F::one()
+    // Wrapper type to avoid conflicts with the generic CurveGroup implementation
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestGroupElement<F: Field>(F);
+
+    impl<F: Field> ark_ff::Zero for TestGroupElement<F> {
+        fn zero() -> Self {
+            TestGroupElement(F::zero())
         }
         
-        fn inverse(&self) -> Self {
-            self.inverse().unwrap()
+        fn is_zero(&self) -> bool {
+            self.0.is_zero()
+        }
+    }
+
+    impl<F: Field> std::ops::Add<Self> for TestGroupElement<F> {
+        type Output = Self;
+        
+        fn add(self, other: Self) -> Self::Output {
+            TestGroupElement(self.0 + other.0)
+        }
+    }
+
+    impl<F: Field> AddAssign<Self> for TestGroupElement<F> {
+        fn add_assign(&mut self, other: Self) {
+            self.0 += other.0;
+        }
+    }
+
+    impl<F: Field> SubAssign<Self> for TestGroupElement<F> {
+        fn sub_assign(&mut self, other: Self) {
+            self.0 -= other.0;
+        }
+    }
+
+    impl<F: Field> Sub<Self> for TestGroupElement<F> {
+        type Output = Self;
+        
+        fn sub(self, other: Self) -> Self::Output {
+            TestGroupElement(self.0 - other.0)
+        }
+    }
+
+    impl<F: Field> Mul<F> for TestGroupElement<F> {
+        type Output = Self;
+        
+        fn mul(self, scalar: F) -> Self::Output {
+            TestGroupElement(self.0 * scalar)
+        }
+    }
+
+    impl<F: Field> BasicPairingGroup<F> for TestGroupElement<F> {
+        fn generator() -> Self {
+            TestGroupElement(F::one())
         }
     }
 
     impl<F: Field> BasicPairing for LinearPairing<F> {
         type ScalarField = F;
-        type G1 = F;
-        type G2 = F;
-        type TargetField = F;
+        type G1 = TestGroupElement<F>;
+        type G2 = TestGroupElement<F>;
+        type TargetGroup = F;
         
-        fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetField {
-            g1_elem * g2_elem
+        fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetGroup {
+            g1_elem.0 * g2_elem.0
         }
     }
 
