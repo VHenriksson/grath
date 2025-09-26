@@ -1,349 +1,345 @@
-//! # Pairing-Friendly Elliptic Curve Examples
-//! 
-//! This module demonstrates how to write generic functions that work with
-//! any pairing-friendly elliptic curve from the Arkworks ecosystem.
-//! 
-//! The key is using the `Pairing` trait which provides access to:
-//! - G1 and G2 groups
-//! - Scalar field
-//! - Bilinear pairing operation
-//! - Target field (GT)
+use ark_ec::pairing::{Pairing, PairingOutput};
+use ark_ec::CurveGroup;
 
-use ark_ec::{pairing::Pairing, CurveGroup, Group, AffineRepr};
-use ark_ff::{UniformRand, Zero, One};
-use ark_poly::{Polynomial, DenseUVPolynomial};
-use ark_std::rand::Rng;
+use crate::linear_proof::{BasicPairing, BasicPairingGroup, setup_linear, prove_linear, verify_linear, Groth16SetupParameters, NILPProof};
+use crate::quadratic_arithmetic_programs::QAP;
 
-use crate::{linear_proof::setup_linear, quadratic_arithmetic_programs::QAP};
-
-pub struct Sigma1<G: CurveGroup> {
-    alpha: G,
-    beta: G,
-    delta: G,
-    x_vec: Vec<G>,
-    l_vec: Vec<G>,
-    k_vec: Vec<G>,
-    t_vec: Vec<G>,
-}
-
-pub struct Sigma2<G: CurveGroup> {
-    beta: G,
-    gamma: G,
-    delta: G,
-    x_vec: Vec<G>,
-}
-
-pub fn trusted_setup<E: Pairing>(qap: &QAP<E::ScalarField>) -> (Sigma1<E::G1>, Sigma2<E::G2>) {
-
-    let toxic_waste = setup_linear::<E::ScalarField>(qap);
-    
-    // Get generators for G1 and G2
-    let g1 = E::G1::generator();
-    let g2 = E::G2::generator();
-
-    let sigma1 = Sigma1 {
-        alpha: g1*toxic_waste.alpha,
-        beta: g1*toxic_waste.beta,
-        delta: g1*toxic_waste.delta,
-        x_vec: toxic_waste.x_powers.iter().map(|&x| g1 * x).collect(),
-        l_vec: toxic_waste.l_terms.iter().map(|&x| g1 * x).collect(),
-        k_vec: toxic_waste.k_terms.iter().map(|&x| g1 * x).collect(),
-        t_vec: toxic_waste.x_powers_times_t_div_by_delta.iter().map(|&x| g1 * x).collect(),
-    };
-
-    let sigma2 = Sigma2 {
-        beta: g2 * toxic_waste.beta,
-        gamma: g2 * toxic_waste.gamma,
-        delta: g2 * toxic_waste.delta,
-        x_vec: toxic_waste.x_powers.iter().map(|&x| g2 * x).collect(),
-    };
-    (sigma1, sigma2)
-}
-
-pub fn prove<E: Pairing>(sigma1: &Sigma1<E::G1>, sigma2: &Sigma2<E::G2>, qap: &QAP<E::ScalarField>, witness: &[E::ScalarField]) -> (E::G1, E::G2, E::G1) {
-    use rand_chacha::ChaCha20Rng;
-    use rand::{SeedableRng};
-
-    assert!(witness.len() == qap.num_variables, "Witness length must match number of QAP variables");
-    
-    // Use cryptographically secure RNG
-    let mut rng = ChaCha20Rng::from_entropy();
-    let _r = E::ScalarField::rand(&mut rng);
-    let _s = E::ScalarField::rand(&mut rng);
-
-    let mut a = sigma1.alpha + sigma1.delta * _r;
-    let mut b = sigma2.beta + sigma2.gamma * _s;
-    let mut b_g1 = sigma1.beta + sigma1.delta * _s;
-
-    for i in 0..witness.len() {
-        a += evaluate_polynomial(&qap.u_polynomials[i], &sigma1.x_vec) * witness[i];
-        b += evaluate_polynomial(&qap.v_polynomials[i], &sigma2.x_vec) * witness[i];
-        b_g1 += evaluate_polynomial(&qap.v_polynomials[i], &sigma1.x_vec) * witness[i];
+// Implement BasicPairingGroup for any CurveGroup that meets our requirements
+impl<G> BasicPairingGroup<G::ScalarField> for G
+where
+    G: CurveGroup,
+{
+    fn generator() -> Self {
+        G::generator()
     }
-
-    let mut c = a * _s + b_g1 * _r - sigma1.delta * _r * _s;
-
-    for i in qap.num_inputs..qap.num_variables {
-        c += sigma1.k_vec[i - qap.num_inputs] * witness[i];
-    }
-
-    (a, b, c)
 }
 
-pub fn verify<E: Pairing>(input: &[E::ScalarField], sigma1: &Sigma1<E::G1>, sigma2: &Sigma2<E::G2>, proof: &(E::G1, E::G2, E::G1)) -> bool {
+// Implement BasicPairing for any arkworks Pairing type
+impl<P> BasicPairing for P
+where
+    P: Pairing,
+{
+    type ScalarField = P::ScalarField;
+    type G1 = P::G1;
+    type G2 = P::G2;
+    type TargetGroup = PairingOutput<P>;
 
-    let lhs = E::pairing(proof.0, proof.1);
-
-    let mut l_exp = E::G1::zero();
-    for i in 0..input.len() {
-        l_exp += sigma1.l_vec[i] * input[i];
+    fn pairing(g1_elem: Self::G1, g2_elem: Self::G2) -> Self::TargetGroup {
+        P::pairing(g1_elem, g2_elem)
     }
-    let rhs = E::pairing(sigma1.alpha, sigma2.beta) +
-              E::pairing(l_exp, sigma2.gamma) +
-              E::pairing(proof.2, sigma2.delta);
-
-    lhs == rhs
 }
 
-fn evaluate_polynomial<F: ark_ff::Field, G: CurveGroup<ScalarField = F>>(
-    poly: &ark_poly::univariate::DensePolynomial<F>, 
-    power_vector: &[G]
-) -> G {
-    // Evaluate polynomial p(x) = a₀ + a₁x + a₂x² + ... using powers [1, x, x², ...]
-    // Result is a₀*G + a₁*(x*G) + a₂*(x²*G) + ...
-    
-    let coeffs = &poly.coeffs;  // Access coefficients directly
-    let mut result = G::zero();
-    
-    for (coeff, power_element) in coeffs.iter().zip(power_vector.iter()) {
-        result += *power_element * *coeff;
-    }
-    
-    result
+/// Groth16 trusted setup - generates the proving and verification keys
+pub fn trusted_setup<P: Pairing>(qap: &QAP<P::ScalarField>) -> Groth16SetupParameters<P::G1, P::G2> {
+    setup_linear::<P>(qap)
 }
 
-#[cfg(test)]
-mod trusted_setup_tests {
+/// Groth16 prove function - generates a zero-knowledge proof
+pub fn prove<P: Pairing>(
+    qap: &QAP<P::ScalarField>,
+    witness: &[P::ScalarField], 
+    setup: &Groth16SetupParameters<P::G1, P::G2>
+) -> NILPProof<P::G1, P::G2> {
+    prove_linear::<P>(qap, witness, setup)
+}
+
+/// Groth16 verify function - verifies a zero-knowledge proof
+pub fn verify<P: Pairing>(
+    qap: &QAP<P::ScalarField>,
+    public_inputs: &[P::ScalarField],
+    proof: &NILPProof<P::G1, P::G2>,
+    setup: &Groth16SetupParameters<P::G1, P::G2>
+) -> bool {
+    verify_linear::<P>(qap, public_inputs, proof, setup)
+}
+
+mod tests {
+
     use super::*;
-    use ark_bn254::{Bn254, Fr, G1Projective, G2Projective};
-    use ark_ff::{One, Zero};
-    use ark_poly::DenseUVPolynomial;
-    use crate::quadratic_arithmetic_programs::QAP;
+    use ark_bls12_381::Bls12_381;
+    use ark_bn254::{Bn254, Fr};
+    use ark_ec::bls12::Bls12;
+    use ark_ff::{Field, Zero, One};
+    use ark_poly::univariate::DensePolynomial;
 
-    fn create_simple_qap() -> QAP<Fr> {
-        // Create a minimal QAP for testing
-        QAP {
-            num_variables: 3,
-            num_inputs: 1,
-            u_polynomials: vec![
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::zero()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-            ],
-            v_polynomials: vec![
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::zero()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-            ],
-            w_polynomials: vec![
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::zero()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-                DenseUVPolynomial::from_coefficients_vec(vec![Fr::zero()]),
-            ],
-            target_polynomial: DenseUVPolynomial::from_coefficients_vec(vec![Fr::one()]),
-        }
-    }
-
-    #[test]
-    fn test_trusted_setup_runs_without_panic() {
-        let qap = create_simple_qap();
-        let (_sigma1, _sigma2) = trusted_setup::<Bn254>(&qap);
-        // If we get here, the function didn't panic
-        assert!(true);
-    }
-
-    #[test]
-    fn test_trusted_setup_produces_non_zero_elements() {
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
-        
-        // Basic elements should be non-zero
-        assert_ne!(sigma1.alpha, G1Projective::zero());
-        assert_ne!(sigma1.beta, G1Projective::zero());
-        assert_ne!(sigma1.delta, G1Projective::zero());
-        
-        assert_ne!(sigma2.beta, G2Projective::zero());
-        assert_ne!(sigma2.gamma, G2Projective::zero());
-        assert_ne!(sigma2.delta, G2Projective::zero());
-    }
-
-    #[test]
-    fn test_trusted_setup_vector_lengths() {
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
-        
-        // Vectors should have reasonable lengths
-        assert_eq!(sigma1.x_vec.len(), sigma2.x_vec.len());
-        assert!(!sigma1.l_vec.is_empty());
-        assert!(!sigma1.k_vec.is_empty());
-        // Note: t_vec might be empty for simple QAPs, so we don't assert on it
-    }
-
-    #[test]
-    fn test_randomness_produces_different_setups() {
-        let qap = create_simple_qap();
-        
-        let (sigma1_a, _) = trusted_setup::<Bn254>(&qap);
-        let (sigma1_b, _) = trusted_setup::<Bn254>(&qap);
-        
-        // Should be different due to randomness
-        assert_ne!(sigma1_a.alpha, sigma1_b.alpha);
-    }
-
-    #[test]
-    fn test_pairing_consistency() {
-        use ark_ec::pairing::Pairing;
-        
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
-        
-        let g1 = G1Projective::generator();
-        let g2 = G2Projective::generator();
-        
-        // Test beta consistency: e(beta_G1, G2) = e(G1, beta_G2)
-        let left = Bn254::pairing(sigma1.beta, g2);
-        let right = Bn254::pairing(g1, sigma2.beta);
-        assert_eq!(left, right);
-    }
-
-    #[test]
-    fn test_evaluate_polynomial() {
+    /// Create a QAP that represents the constraint: x * 1 = 4
+    /// Variables: [1, x] where:
+    /// - variable 0 is the constant 1 (public input)
+    /// - variable 1 is x (witness variable)
+    fn create_test_qap<F: Field>() -> QAP<F> {
         use ark_poly::DenseUVPolynomial;
-        use ark_poly::Polynomial;
         
-        // Create a much more complex polynomial p(x) = 7 + 13x - 5x² + 11x³ - 3x⁴ + 2x⁵ + 17x⁶
-        let poly = DenseUVPolynomial::from_coefficients_vec(vec![
-            Fr::from(7u32),   // constant term
-            Fr::from(13u32),  // x term  
-            Fr::from(-5i32),  // x² term (negative coefficient)
-            Fr::from(11u32),  // x³ term
-            Fr::from(-3i32),  // x⁴ term (negative coefficient)
-            Fr::from(2u32),   // x⁵ term
-            Fr::from(17u32),  // x⁶ term
-        ]);
+        // u polynomial for "x * 1": u_0=0, u_1=1 (selects variable 1 = x)
+        let u_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
+        let u_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::one()]);  // constant 1 (selects x)
+        
+        // v polynomial for "x * 1": v_0=1, v_1=0 (selects variable 0 = 1)  
+        let v_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::one()]);  // constant 1 (selects 1)
+        let v_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
 
+        // w polynomial for "= 4": w_0=4, w_1=0 (constant 4)
+        let w_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::from(4u32)]); // constant 4
+        let w_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 0
 
-        // Choose a known secret value x = 7
-        let x = Fr::from(7u32);
-        let g1 = G1Projective::generator();
-        
-        // Create power vector: [G, x*G, x²*G, ..., x⁶*G] = [G, 7*G, 49*G, 343*G, 2401*G, 16807*G, 117649*G]
-        let mut x_power = Fr::from(1u32); // Start with x^0 = 1
-        let mut power_vector = Vec::new();
-        
-        for _ in 0..7 {  // Need 7 powers for degree 6 polynomial
-            power_vector.push(g1 * x_power);
-            x_power *= x; // Next power: x^1, x^2, x^3, x^4, x^5, x^6
+        // Target polynomial: (x-1) - evaluates to 0 when x=1
+        let target_poly = DensePolynomial::from_coefficients_vec(vec![-F::one(), F::one()]); // (x-1)
+
+        QAP {
+            num_variables: 2,  
+            num_inputs: 1,     // public input: the constant 1
+            u_polynomials: vec![u_poly_0, u_poly_1],
+            v_polynomials: vec![v_poly_0, v_poly_1],
+            w_polynomials: vec![w_poly_0, w_poly_1],
+            target_polynomial: target_poly,
         }
-        
-        // Method 1: Use our evaluate_polynomial function
-        // Should compute: 7*(1*G) + 13*(7*G) - 5*(49*G) + 11*(343*G) - 3*(2401*G) + 2*(16807*G) + 17*(117649*G)
-        let result1 = evaluate_polynomial(&poly, &power_vector);
-        
-        // Method 2: Direct evaluation p(7) * G
-        let poly_value = poly.evaluate(&x); 
-        // p(7) = 7 + 13*7 - 5*7² + 11*7³ - 3*7⁴ + 2*7⁵ + 17*7⁶
-        // Let's verify a few terms manually:
-        // 7 + 91 - 5*49 + 11*343 - 3*2401 + 2*16807 + 17*117649
-        // = 7 + 91 - 245 + 3773 - 7203 + 33614 + 2000033 = 2030070
-        let result2 = g1 * poly_value;
-        
-        // They should be equal: both represent p(7)*G
-        assert_eq!(result1, result2);
-        
-        // Verify the actual computation manually
-        let expected = Fr::from(7u32) + 
-                      Fr::from(13u32) * Fr::from(7u32) + 
-                      Fr::from(-5i32) * Fr::from(49u32) + 
-                      Fr::from(11u32) * Fr::from(343u32) + 
-                      Fr::from(-3i32) * Fr::from(2401u32) + 
-                      Fr::from(2u32) * Fr::from(16807u32) + 
-                      Fr::from(17u32) * Fr::from(117649u32);
-        
-        assert_eq!(poly_value, expected);
     }
 
+
     #[test]
-    fn test_prove_and_verify() {
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
+    fn test_groth16_with_bn254() {
+        let qap = create_test_qap();
+
+        // Run trusted setup
+        let setup = trusted_setup::<Bn254>(&qap);
         
-        // Create a witness that satisfies our simple QAP
-        // QAP has 3 variables: [1, input, output] where output = input
-        let input_value = Fr::from(42u32);
+
+        // Create a witness: [1, 5, 25] representing x=5, x^2=25
         let witness = vec![
-            Fr::one(),        // variable 0: always 1 (constant)
-            input_value,      // variable 1: public input
-            input_value,      // variable 2: output (should equal input for our constraint)
+            Fr::one(),        // variable 0: constant 1 (public input)
+            Fr::from(4u32),   // variable 1: x = 4 (witness)
         ];
         
-        // The public inputs (first qap.num_inputs variables)
-        let public_inputs = vec![Fr::one()]; // Only the constant "1" is public input
+        // Public inputs: [1] (just the constant)
+        let public_inputs = vec![Fr::one()];
         
         // Generate proof
-        let proof = prove::<Bn254>(&sigma1, &sigma2, &qap, &witness);
+        let proof = prove::<Bn254>(&qap, &witness, &setup);
         
         // Verify proof
-        let is_valid = verify::<Bn254>(&public_inputs, &sigma1, &sigma2, &proof);
+        let is_valid = verify::<Bn254>(&qap, &public_inputs, &proof, &setup);
+        assert!(is_valid, "Proof should be valid");
         
-        // The proof should have non-zero components
-        assert_ne!(proof.0, G1Projective::zero(), "Proof component A should be non-zero");
-        assert_ne!(proof.1, G2Projective::zero(), "Proof component B should be non-zero");
-        assert_ne!(proof.2, G1Projective::zero(), "Proof component C should be non-zero");
+        // Test with wrong public input - should fail
+        let wrong_public_inputs = vec![Fr::from(2u32)];
+        let is_invalid = verify::<Bn254>(&qap, &wrong_public_inputs, &proof, &setup);
+        assert!(!is_invalid, "Proof should be invalid with wrong public input");
+    }
+
+    /// Create a complex QAP for testing:
+    /// Constraint 1: x * x = x2          (x^2)
+    /// Constraint 2: x2 * x = x3         (x^3) 
+    /// Constraint 3: a * x3 = ax3        (a*x^3)
+    /// Constraint 4: b * x2 = bx2        (b*x^2)
+    /// Constraint 5: c * x = cx          (c*x)
+    /// Constraint 6: 1 * ax3 = ax3       (copy constraint for ax3)
+    /// Constraint 7: 1 * bx2 = bx2       (copy constraint for bx2)  
+    /// Constraint 8: 1 * cx = cx         (copy constraint for cx)
+    /// Constraint 9: 1 * d = d           (copy constraint for d)
+    /// Constraint 10: (ax3+bx2+cx+d) * 1 = result (final sum - this encodes addition as single constraint)
+    ///
+    /// Variables: [1, x, result, a, b, c, d, x2, x3, ax3, bx2, cx] (12 variables)
+    /// Public inputs: constant 1, x, and result (first 3 variables as required)
+    fn create_complex_qap<F: Field>() -> QAP<F> {
+        use ark_relations::r1cs::ConstraintMatrices;
+        use crate::quadratic_arithmetic_programs::constraint_matrices_to_qap;
         
-        // Print verification result for debugging
-        println!("Proof verification result: {}", is_valid);
+        // Variables: [1, x, result, a, b, c, d, x2, x3, ax3, bx2, cx]
+        //           [ 0, 1,      2, 3, 4, 5, 6,  7,  8,   9,  10, 11]
         
-        // Note: The verification might not pass because our QAP and verification 
-        // implementation is simplified. In a complete Groth16 implementation,
-        // more complex polynomial relationships would be enforced.
+        let constraint_matrices = ConstraintMatrices {
+            num_instance_variables: 1,  // Just the constant 1
+            num_witness_variables: 11,  // x, result, a, b, c, d, x2, x3, ax3, bx2, cx
+            num_constraints: 6,
+            a: vec![
+                vec![(F::one(), 1)],        // Constraint 0: x * x = x2
+                vec![(F::one(), 7)],        // Constraint 1: x2 * x = x3
+                vec![(F::one(), 3)],        // Constraint 2: a * x3 = ax3
+                vec![(F::one(), 4)],        // Constraint 3: b * x2 = bx2
+                vec![(F::one(), 5)],        // Constraint 4: c * x = cx
+                vec![(F::one(), 9), (F::one(), 10), (F::one(), 11), (F::one(), 6)],  // Constraint 5: (ax3+bx2+cx+d) * 1 = result
+            ],
+            a_num_non_zero: 8,
+            b: vec![
+                vec![(F::one(), 1)],        // Constraint 0: x * x = x2
+                vec![(F::one(), 1)],        // Constraint 1: x2 * x = x3
+                vec![(F::one(), 8)],        // Constraint 2: a * x3 = ax3
+                vec![(F::one(), 7)],        // Constraint 3: b * x2 = bx2
+                vec![(F::one(), 1)],        // Constraint 4: c * x = cx
+                vec![(F::one(), 0)],        // Constraint 5: (ax3+bx2+cx+d) * 1 = result
+            ],
+            b_num_non_zero: 6,
+            c: vec![
+                vec![(F::one(), 7)],        // Constraint 0: x * x = x2
+                vec![(F::one(), 8)],        // Constraint 1: x2 * x = x3
+                vec![(F::one(), 9)],        // Constraint 2: a * x3 = ax3
+                vec![(F::one(), 10)],       // Constraint 3: b * x2 = bx2
+                vec![(F::one(), 11)],       // Constraint 4: c * x = cx
+                vec![(F::one(), 2)],        // Constraint 5: (ax3+bx2+cx+d) * 1 = result
+            ],
+            c_num_non_zero: 6,
+        };
+        
+        constraint_matrices_to_qap(&constraint_matrices, 3)
     }
 
     #[test]
-    fn test_different_proofs_are_different() {
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
+    fn test_complex_qap() {
+        use ark_bn254::Fr;
+        use ark_ff::One;
         
-        // Create two different witnesses
-        let witness1 = vec![Fr::one(), Fr::from(10u32), Fr::from(10u32)];
-        let witness2 = vec![Fr::one(), Fr::from(20u32), Fr::from(20u32)];
+        let qap = create_complex_qap::<Fr>();
         
-        // Generate proofs
-        let proof1 = prove::<Bn254>(&sigma1, &sigma2, &qap, &witness1);
-        let proof2 = prove::<Bn254>(&sigma1, &sigma2, &qap, &witness2);
+
+        let setup = trusted_setup::<Bn254>(&qap);
+
+        // Create a satisfying witness for polynomial: result = a*x^3 + b*x^2 + c*x + d
+        // Let's use: x=3, a=2, b=1, c=4, d=5
+        // Expected: result = 2*27 + 1*9 + 4*3 + 5 = 54 + 9 + 12 + 5 = 80
         
-        // Proofs should be different due to different witnesses
-        assert_ne!(proof1.0, proof2.0, "Different witnesses should produce different A values");
+        let x = Fr::from(3u32);
+        let a = Fr::from(2u32);
+        let b = Fr::from(1u32);
+        let c = Fr::from(4u32);
+        let d = Fr::from(5u32);
+        
+        // Compute intermediate values
+        let x2 = x * x;                    // 9
+        let x3 = x2 * x;                   // 27
+        let ax3 = a * x3;                  // 54
+        let bx2 = b * x2;                  // 9
+        let cx = c * x;                    // 12
+        let result = ax3 + bx2 + cx + d;   // 54 + 9 + 12 + 5 = 80
+        
+        let witness = vec![
+            Fr::one(),    // variable 0: constant 1 (public input)
+            x,            // variable 1: x = 3 (public input)
+            result,       // variable 2: result = 80 (public input)
+            a,            // variable 3: a = 2 (private)
+            b,            // variable 4: b = 1 (private)
+            c,            // variable 5: c = 4 (private)
+            d,            // variable 6: d = 5 (private)
+            x2,           // variable 7: x2 = 9 (intermediate)
+            x3,           // variable 8: x3 = 27 (intermediate)
+            ax3,          // variable 9: ax3 = 54 (intermediate)
+            bx2,          // variable 10: bx2 = 9 (intermediate)
+            cx,           // variable 11: cx = 12 (intermediate)
+        ];
+
+        // Public inputs: [1, x, result] - we know x and the final result, but not the coefficients
+        let public_inputs = vec![Fr::one(), x, result];
+
+        let proof = prove::<Bn254>(&qap, &witness, &setup);
+
+        assert!(verify::<Bn254>(&qap, &public_inputs, &proof, &setup), "Complex QAP proof verification failed");
+
+        let wrong_public_inputs = vec![Fr::one(), x, result + Fr::one()];
+        assert!(!verify::<Bn254>(&qap, &wrong_public_inputs, &proof, &setup), "Proof verification should fail with wrong public input");
     }
 
     #[test]
-    fn test_randomness_in_proofs() {
-        let qap = create_simple_qap();
-        let (sigma1, sigma2) = trusted_setup::<Bn254>(&qap);
+    fn test_complex_qap_different_witness() {
+        use ark_bn254::Fr;
+        use ark_ff::One;
         
-        // Same witness
-        let witness = vec![Fr::one(), Fr::from(15u32), Fr::from(15u32)];
+        let qap = create_complex_qap::<Fr>();
+        let setup = trusted_setup::<Bn254>(&qap);
+
+        // Use the same QAP structure but with different polynomial coefficients
+        // This time: x=2, a=1, b=3, c=2, d=7
+        // Expected: result = 1*8 + 3*4 + 2*2 + 7 = 8 + 12 + 4 + 7 = 31
         
-        // Generate two proofs with same witness
-        let proof1 = prove::<Bn254>(&sigma1, &sigma2, &qap, &witness);
-        let proof2 = prove::<Bn254>(&sigma1, &sigma2, &qap, &witness);
+        let x = Fr::from(2u32);
+        let a = Fr::from(1u32);
+        let b = Fr::from(3u32);
+        let c = Fr::from(2u32);
+        let d = Fr::from(7u32);
         
-        // Proofs should be different due to randomness (r and s values)
-        assert_ne!(proof1.0, proof2.0, "Same witness should still produce different proofs due to randomness");
-        assert_ne!(proof1.1, proof2.1, "Same witness should still produce different proofs due to randomness");
-        assert_ne!(proof1.2, proof2.2, "Same witness should still produce different proofs due to randomness");
+        // Compute intermediate values
+        let x2 = x * x;                    // 4
+        let x3 = x2 * x;                   // 8
+        let ax3 = a * x3;                  // 8
+        let bx2 = b * x2;                  // 12
+        let cx = c * x;                    // 4
+        let result = ax3 + bx2 + cx + d;   // 8 + 12 + 4 + 7 = 31
+        
+        let witness = vec![
+            Fr::one(),    // variable 0: constant 1 (public input)
+            x,            // variable 1: x = 2 (public input)
+            result,       // variable 2: result = 31 (public input)
+            a,            // variable 3: a = 1 (private)
+            b,            // variable 4: b = 3 (private)
+            c,            // variable 5: c = 2 (private)
+            d,            // variable 6: d = 7 (private)
+            x2,           // variable 7: x2 = 4 (intermediate)
+            x3,           // variable 8: x3 = 8 (intermediate)
+            ax3,          // variable 9: ax3 = 8 (intermediate)
+            bx2,          // variable 10: bx2 = 12 (intermediate)
+            cx,           // variable 11: cx = 4 (intermediate)
+        ];
+
+        // Public inputs: [1, x, result] - different values than the previous test
+        let public_inputs = vec![Fr::one(), x, result];
+
+        let proof = prove::<Bn254>(&qap, &witness, &setup);
+
+        assert!(verify::<Bn254>(&qap, &public_inputs, &proof, &setup), "Complex QAP proof verification failed with different witness");
+
+        // Test with wrong result to ensure security
+        let wrong_public_inputs = vec![Fr::one(), x, Fr::from(999u32)];
+        assert!(!verify::<Bn254>(&qap, &wrong_public_inputs, &proof, &setup), "Complex QAP should reject wrong result");
     }
 
+    #[test]
+    fn test_complex_qap_with_different_curve() {
+        use ark_bls12_381::Fr;
+        use ark_ff::One;
+        
+        let qap = create_complex_qap::<Fr>();
+        let setup = trusted_setup::<Bls12_381>(&qap);
+
+        // Use the same QAP structure but with different polynomial coefficients
+        // This time: x=2, a=1, b=3, c=2, d=7
+        // Expected: result = 1*8 + 3*4 + 2*2 + 7 = 8 + 12 + 4 + 7 = 31
+        
+        let x = Fr::from(2u32);
+        let a = Fr::from(1u32);
+        let b = Fr::from(3u32);
+        let c = Fr::from(2u32);
+        let d = Fr::from(7u32);
+        
+        // Compute intermediate values
+        let x2 = x * x;                    // 4
+        let x3 = x2 * x;                   // 8
+        let ax3 = a * x3;                  // 8
+        let bx2 = b * x2;                  // 12
+        let cx = c * x;                    // 4
+        let result = ax3 + bx2 + cx + d;   // 8 + 12 + 4 + 7 = 31
+        
+        let witness = vec![
+            Fr::one(),    // variable 0: constant 1 (public input)
+            x,            // variable 1: x = 2 (public input)
+            result,       // variable 2: result = 31 (public input)
+            a,            // variable 3: a = 1 (private)
+            b,            // variable 4: b = 3 (private)
+            c,            // variable 5: c = 2 (private)
+            d,            // variable 6: d = 7 (private)
+            x2,           // variable 7: x2 = 4 (intermediate)
+            x3,           // variable 8: x3 = 8 (intermediate)
+            ax3,          // variable 9: ax3 = 8 (intermediate)
+            bx2,          // variable 10: bx2 = 12 (intermediate)
+            cx,           // variable 11: cx = 4 (intermediate)
+        ];
+
+        // Public inputs: [1, x, result] - different values than the previous test
+        let public_inputs = vec![Fr::one(), x, result];
+
+        let proof = prove::<Bls12_381>(&qap, &witness, &setup);
+
+        assert!(verify::<Bls12_381>(&qap, &public_inputs, &proof, &setup), "Complex QAP proof verification failed with different witness");
+
+        // Test with wrong result to ensure security
+        let wrong_public_inputs = vec![Fr::one(), x, Fr::from(999u32)];
+        assert!(!verify::<Bls12_381>(&qap, &wrong_public_inputs, &proof, &setup), "Complex QAP should reject wrong result");
+    }
 
 }
-
