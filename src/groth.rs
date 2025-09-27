@@ -2,7 +2,7 @@ use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_ec::CurveGroup;
 
 use crate::linear_proof::{setup_linear, prove_linear, verify_linear, Groth16SetupParameters, NILPProof};
-use crate::pairing_traits::{BasicPairing, BasicPairingGroup};
+use crate::basic_pairing::{BasicPairing, BasicPairingGroup};
 use crate::quadratic_arithmetic_programs::QAP;
 
 // Implement BasicPairingGroup for any CurveGroup that meets our requirements

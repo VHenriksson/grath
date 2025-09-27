@@ -40,7 +40,7 @@ use std::ops::{AddAssign, Mul, Sub, SubAssign};
 
 use ark_ff::Field;
 
-use crate::pairing_traits::{BasicPairing, BasicPairingGroup};
+use crate::basic_pairing::{BasicPairing, BasicPairingGroup};
 
 /// A linear pairing implementation for testing purposes. It uses a single field as both groups,
 /// and the pairing operation is simply field multiplication.

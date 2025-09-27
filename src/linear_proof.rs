@@ -4,7 +4,7 @@ use rand::{SeedableRng, RngCore};
 use ark_poly::Polynomial;
 use std::ops::{AddAssign, Mul, Sub, SubAssign};
 
-use crate::pairing_traits::{BasicPairing, BasicPairingGroup};
+use crate::basic_pairing::{BasicPairing, BasicPairingGroup};
 use crate::quadratic_arithmetic_programs::QAP;
 use crate::polynomial_from_exponent_vector::evaluate_polynomial;
 
