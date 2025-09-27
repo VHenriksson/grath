@@ -1,7 +1,7 @@
 use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_ec::CurveGroup;
 
-use crate::linear_proof::{setup_linear, prove_linear, verify_linear, Groth16SetupParameters, NILPProof};
+use crate::linear_proof::{setup_linear, prove_linear, verify_linear, Groth16SetupParameters, GrothProof};
 use crate::basic_pairing::{BasicPairing, BasicPairingGroup};
 use crate::quadratic_arithmetic_programs::QAP;
 
@@ -40,7 +40,7 @@ pub fn prove<P: Pairing>(
     qap: &QAP<P::ScalarField>,
     witness: &[P::ScalarField], 
     setup: &Groth16SetupParameters<P::G1, P::G2>
-) -> NILPProof<P::G1, P::G2> {
+) -> GrothProof<P::G1, P::G2> {
     prove_linear::<P>(qap, witness, setup)
 }
 
@@ -48,7 +48,7 @@ pub fn prove<P: Pairing>(
 pub fn verify<P: Pairing>(
     qap: &QAP<P::ScalarField>,
     public_inputs: &[P::ScalarField],
-    proof: &NILPProof<P::G1, P::G2>,
+    proof: &GrothProof<P::G1, P::G2>,
     setup: &Groth16SetupParameters<P::G1, P::G2>
 ) -> bool {
     verify_linear::<P>(qap, public_inputs, proof, setup)

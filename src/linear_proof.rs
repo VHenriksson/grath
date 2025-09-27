@@ -1,3 +1,24 @@
+//! # Groth16 Linear Proof System
+//!
+//! ## Overview
+//!
+//! Implementation of the Groth16 zero-knowledge proof system for quadratic arithmetic programs (QAPs).
+//! This module provides the core functionality for trusted setup, proof generation, and verification
+//! in the Groth16 protocol.
+//!
+//! ## 🚨⚠️ **IMPORTANT** ⚠️🚨
+//!
+//! **THIS IS A LEARNING IMPLEMENTATION - NOT FOR PRODUCTION USE!**
+//!
+//! Although the full library is unsecure (e.g. with respect to side-channel attacks), this
+//! module in particular does not even require the underlying objects to be cryptographically secure
+//! pairings. Thus the security will depend completely on the used pairing (even if the implementation
+//! is otherwise secure).
+//!
+//! For production systems, use established libraries like arkworks or bellman with proper
+//! elliptic curve implementations and security audits.
+//!
+
 use ark_ff::{Field, UniformRand, Zero, One};
 use rand_chacha::ChaCha20Rng;
 use rand::{SeedableRng, RngCore};
@@ -9,6 +30,20 @@ use crate::quadratic_arithmetic_programs::QAP;
 use crate::polynomial_from_exponent_vector::evaluate_polynomial;
 
 
+/// Sigma1 parameters for Groth16 trusted setup
+///
+/// Contains group elements in G1 used during proof generation.
+/// These parameters are computed during the trusted setup phase using toxic waste.
+///
+/// # Fields
+///
+/// * `alpha` - Generator multiplied by toxic waste parameter α
+/// * `beta` - Generator multiplied by toxic waste parameter β  
+/// * `delta` - Generator multiplied by toxic waste parameter δ
+/// * `x_vec` - Powers of x: \[g, xg, x²g, ..., x^dg\] for degree d
+/// * `l_vec` - L terms for public inputs: ((β·uᵢ + α·vᵢ + wᵢ)/γ)g
+/// * `k_vec` - K terms for witness variables: ((β·uᵢ + α·vᵢ + wᵢ)/δ)g
+/// * `t_vec` - Powers times target polynomial: (xⁱ·t(x)/δ)g
 pub struct Sigma1<G> {
     pub alpha: G,
     pub beta: G,
@@ -19,6 +54,17 @@ pub struct Sigma1<G> {
     pub t_vec: Vec<G>,
 }
 
+/// Sigma2 parameters for Groth16 trusted setup
+///
+/// Contains group elements in G2 used during verification.
+/// These parameters are computed during the trusted setup phase using toxic waste.
+///
+/// # Fields
+///
+/// * `beta` - Generator multiplied by toxic waste parameter β
+/// * `gamma` - Generator multiplied by toxic waste parameter γ  
+/// * `delta` - Generator multiplied by toxic waste parameter δ
+/// * `x_vec` - Powers of x: \[h, xh, x²h, ..., x^d*h\] for degree d
 pub struct Sigma2<G> {
     pub beta: G,
     pub gamma: G,
@@ -26,27 +72,56 @@ pub struct Sigma2<G> {
     pub x_vec: Vec<G>,
 }
 
-/// Groth16 setup parameters
-/// 
-/// Uses dynamic sizing for flexibility in constraint system sizes
+/// Groth16 setup parameters containing proving and verification keys
+///
+/// Contains all parameters needed for both proof generation and verification
+/// in the Groth16 protocol. Generated during the trusted setup phase.
+///
+/// # Type Parameters
+///
+/// * `G1` - First group type (typically an elliptic curve group)
+/// * `G2` - Second group type (typically a twisted curve group)
+///
+/// # Fields
+///
+/// * `sigma1` - G1 parameters for proof generation
+/// * `sigma2` - G2 parameters for verification
+///
+/// # Security Note
+///
+/// These parameters are derived from toxic waste that must be securely destroyed
+/// after setup to maintain the security of the proof system.
 pub struct Groth16SetupParameters<G1, G2> {
     pub sigma1: Sigma1<G1>,
     pub sigma2: Sigma2<G2>,
-    // pub alpha: F,
-    // pub beta: F,
-    // pub gamma: F,
-    // pub delta: F,
-    // pub x_powers: Vec<F>, // x^0, x^1, ..., x^{N-1}
-    // pub l_terms: Vec<F>,  // L terms for input variables
-    // pub k_terms: Vec<F>,  // M-L terms for auxiliary variables
-    // pub x_powers_times_t_div_by_delta: Vec<F>, // x^i * t(x) / delta for i in 0..N
 }
 
-/// Generate toxic waste parameters for Groth16 setup
-/// 
-/// Returns five field elements: alpha, beta, gamma, delta, x
-/// These are the "toxic waste" parameters that must be securely discarded
-/// after the trusted setup ceremony.
+/// Generate toxic waste parameters for Groth16 trusted setup
+///
+/// Generates (hopefully) cryptographically secure random field elements used as secret
+/// parameters in the Groth16 trusted setup ceremony. These parameters must be securely
+/// destroyed after setup to maintain proof system security.
+///
+/// # Type Parameters
+///
+/// * `F` - Field type implementing uniform random sampling
+///
+/// # Returns
+///
+/// Tuple `(α, β, γ, δ, x)` where:
+/// - `α, β` - Used for polynomial evaluation scaling
+/// - `γ` - Used for public input handling  
+/// - `δ` - Used for witness variable handling
+/// - `x` - Secret evaluation point for polynomials
+///
+///
+/// # Example
+///
+/// ```rust
+/// use ark_bn254::Fr;
+/// let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<Fr>();
+/// // These values must be securely destroyed after setup!
+/// ```
 pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     // Use ChaCha20: cryptographically secure, fast, side-channel resistant
     let mut rng = ChaCha20Rng::from_entropy();
@@ -60,11 +135,50 @@ pub fn generate_toxic_waste<F: Field>() -> (F, F, F, F, F) {
     (alpha, beta, gamma, delta, x)
 }
 
+/// Generate Groth16 setup parameters for a given QAP using random toxic waste
+///
+/// Performs the trusted setup ceremony for Groth16 by generating random toxic waste
+/// parameters and computing the corresponding proving and verification keys.
+///
+/// # Type Parameters
+///
+/// * `E` - Pairing type implementing BasicPairing trait
+///
+/// # Arguments
+///
+/// * `qap` - Quadratic arithmetic program to generate setup for
+///
+/// # Returns
+///
+/// Complete setup parameters containing both G1 and G2 elements needed for
+/// proof generation and verification.
 pub fn setup_linear<E: BasicPairing>(qap: &QAP<E::ScalarField>) -> Groth16SetupParameters<E::G1, E::G2> {
     let (alpha, beta, gamma, delta, x) = generate_toxic_waste::<E::ScalarField>();
     setup_linear_with_params::<E>(qap, alpha, beta, gamma, delta, x)
 }
 
+/// Generate Groth16 setup parameters using provided toxic waste values
+///
+/// Performs the computational part of the trusted setup ceremony using
+/// pre-generated toxic waste parameters. This is useful for testing
+/// with deterministic values.
+///
+/// # Type Parameters
+///
+/// * `E` - Pairing type implementing BasicPairing trait
+///
+/// # Arguments
+///
+/// * `qap` - Quadratic arithmetic program to generate setup for
+/// * `alpha` - Toxic waste parameter α for polynomial scaling
+/// * `beta` - Toxic waste parameter β for polynomial scaling  
+/// * `gamma` - Toxic waste parameter γ for public input handling
+/// * `delta` - Toxic waste parameter δ for witness variable handling
+/// * `x` - Secret evaluation point for polynomials
+///
+/// # Returns
+///
+/// Complete setup parameters containing both G1 and G2 elements.
 pub fn setup_linear_with_params<E: BasicPairing>(
     qap: &QAP<E::ScalarField>,
     alpha: E::ScalarField,
@@ -142,34 +256,87 @@ pub fn setup_linear_with_params<E: BasicPairing>(
         },
     }
 }
-/// NILP Proof structure
+/// Groth16 proof structure for zero-knowledge arguments
+///
+/// Contains the three group elements that constitute a Groth16 proof.
+/// These elements prove knowledge of a satisfying witness for the QAP
+/// without revealing the witness itself.
+///
+/// # Type Parameters
+///
+/// * `G1` - First group type (typically an elliptic curve group)
+/// * `G2` - Second group type (typically a twisted curve group)
+///
+/// # Fields
+///
+/// * `proof_a` - First proof element in G1: encodes polynomial A evaluation
+/// * `proof_b` - Second proof element in G2: encodes polynomial B evaluation
+/// * `proof_c` - Third proof element in G1: encodes polynomial C evaluation
 #[derive(Debug, Clone)]
-pub struct NILPProof<G1, G2> {
-    /// Proof elements for the linear proof
-    pub proof_a: G1,  // Evaluation of polynomial A at secret point
-    pub proof_b: G2,  // Evaluation of polynomial B at secret point  
-    pub proof_c: G1,  // Evaluation of polynomial C at secret point
+pub struct GrothProof<G1, G2> {
+    pub proof_a: G1,
+    pub proof_b: G2,
+    pub proof_c: G1,
 }
 
-/// NILP Prover - generates a proof that the witness satisfies the QAP
+/// Generate a Groth16 proof for QAP satisfaction using random blinding factors
+///
+/// Creates a zero-knowledge proof that the provided witness satisfies the given
+/// quadratic arithmetic program. Uses cryptographically secure randomness for
+/// blinding factors to ensure zero-knowledge property.
+///
+/// # Type Parameters
+///
+/// * `E` - Pairing type implementing BasicPairing trait
+///
+/// # Arguments
+///
+/// * `qap` - Quadratic arithmetic program to prove satisfaction for
+/// * `witness` - Complete witness vector including public inputs and private variables
+/// * `setup` - Trusted setup parameters for the QAP
+///
+/// # Returns
+///
+/// Three-element proof (A, B, C) that can be verified against public inputs.
 pub fn prove_linear<E: BasicPairing>(
     qap: &QAP<E::ScalarField>, 
     witness: &[E::ScalarField], 
     setup: &Groth16SetupParameters<E::G1,E::G2>
-) -> NILPProof<E::G1,E::G2> {
+) -> GrothProof<E::G1,E::G2> {
     let mut rng = &mut ChaCha20Rng::from_entropy();
     let r: E::ScalarField = E::ScalarField::rand(&mut rng);
     let s: E::ScalarField = E::ScalarField::rand(&mut rng);
-    prove_linear_with_randomness::<E>(qap, witness, setup, r, s)
+    prove_linear_with_specified_randomness::<E>(qap, witness, setup, r, s)
 }
 
-fn prove_linear_with_randomness<E: BasicPairing>(
+/// Generate a Groth16 proof using specified blinding factors
+///
+/// Internal function that performs the actual proof computation using
+/// provided randomness values. This is useful for testing with deterministic
+/// values or when randomness comes from an external source.
+///
+/// # Type Parameters
+///
+/// * `E` - Pairing type implementing BasicPairing trait
+///
+/// # Arguments
+///
+/// * `qap` - Quadratic arithmetic program to prove satisfaction for
+/// * `witness` - Complete witness vector including public inputs and private variables
+/// * `setup` - Trusted setup parameters for the QAP
+/// * `r` - First blinding factor for zero-knowledge
+/// * `s` - Second blinding factor for zero-knowledge
+///
+/// # Returns
+///
+/// Three-element proof (A, B, C) computed using the specified randomness.
+fn prove_linear_with_specified_randomness<E: BasicPairing>(
     qap: &QAP<E::ScalarField>, 
     witness: &[E::ScalarField], 
     setup: &Groth16SetupParameters<E::G1,E::G2>,
     r: E::ScalarField,
     s: E::ScalarField
-) -> NILPProof<E::G1,E::G2> {
+) -> GrothProof<E::G1,E::G2> {
     let mut a = setup.sigma1.alpha + setup.sigma1.delta * r;
     let mut b = setup.sigma2.beta + setup.sigma2.delta * s;
     let mut b_g1 = setup.sigma1.beta + setup.sigma1.delta * s;
@@ -188,14 +355,38 @@ fn prove_linear_with_randomness<E: BasicPairing>(
 
     c += evaluate_polynomial(&qap.division_polynomial(witness), &setup.sigma1.t_vec);
 
-    NILPProof { proof_a: a, proof_b: b, proof_c: c }
+    GrothProof { proof_a: a, proof_b: b, proof_c: c }
 }
 
 
+/// Verify a Groth16 proof against public inputs
+///
+/// Checks whether a proof is valid for the given public inputs using the
+/// Groth16 verification equation. Returns true if the proof is valid.
+///
+/// # Type Parameters
+///
+/// * `E` - Pairing type implementing BasicPairing trait
+///
+/// # Arguments
+///
+/// * `qap` - Quadratic arithmetic program the proof claims to satisfy
+/// * `public_inputs` - Public portion of the witness (known to verifier)
+/// * `proof` - Three-element proof (A, B, C) to verify
+/// * `setup` - Trusted setup parameters for verification
+///
+/// # Returns
+///
+/// `true` if proof is valid, `false` otherwise.
+///
+/// # Panics
+///
+/// Panics if public input length doesn't match QAP input count.
+///
 pub fn verify_linear<E: BasicPairing>(
     qap: &QAP<E::ScalarField>,
     public_inputs: &[E::ScalarField],
-    proof: &NILPProof<E::G1,E::G2>,
+    proof: &GrothProof<E::G1,E::G2>,
     setup: &Groth16SetupParameters<E::G1,E::G2>
 ) -> bool {
     assert_eq!(public_inputs.len(), qap.num_inputs, "Public input length must match QAP inputs");
@@ -246,7 +437,7 @@ mod tests {
 
         let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, Fr::zero(), Fr::zero());
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, Fr::zero(), Fr::zero());
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::public_input(), &proof, &setup), "Proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::wrong_public_input(), &proof, &setup), "Proof verification should fail with wrong public input");
     }
@@ -271,7 +462,7 @@ mod tests {
         let r = Fr::zero();  // Small non-zero randomness
         let s = Fr::zero();  // Small non-zero randomness
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &[Fr::one(), Fr::from(4u32)], &setup, r, s);
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::one()], &proof, &setup), "Proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &[Fr::from(2u32)], &proof, &setup), "Proof verification should fail with wrong public input");
     }
@@ -295,7 +486,7 @@ mod tests {
         let r = Fr::zero();  // Zero randomness for simplicity
         let s = Fr::zero();  // Zero randomness for simplicity
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::public_input(), &proof, &setup), "Proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::wrong_public_input(), &proof, &setup), "Proof verification should fail with wrong public input");
 
@@ -321,7 +512,7 @@ mod tests {
         let r = Fr::from(11u32);  // Non-trivial randomness
         let s = Fr::from(13u32);  // Non-trivial randomness
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::public_input(), &proof, &setup), "Proof verification failed with all small non-trivial values");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::wrong_public_input(), &proof, &setup), "Proof verification should fail with wrong public input");
     }
@@ -348,7 +539,7 @@ mod tests {
 
         // For x=11, our constraint x*1=4 is not satisfied, so we need a different witness
         // Let's use witness [1, 4] but with the QAP evaluated at x=11
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::public_input(), &proof, &setup), "Proof verification failed with all small non-trivial values");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::wrong_public_input(), &proof, &setup), "Proof verification should fail with wrong public input");
     }
@@ -371,7 +562,7 @@ mod tests {
         let r = Fr::rand(&mut rng);
         let s = Fr::rand(&mut rng);
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &simple_qap::witness(), &setup, r, s);
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::public_input(), &proof, &setup), "Proof verification failed with true randomness");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &simple_qap::wrong_public_input(), &proof, &setup), "Proof verification should fail with wrong public input even with true randomness");
     }
@@ -393,7 +584,7 @@ mod tests {
         let setup = setup_linear_with_params::<LinearPairing<Fr>>(&qap, alpha, beta, gamma, delta, x);
 
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_input(), &proof, &setup), "Multi-input proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::wrong_public_input(), &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
@@ -408,7 +599,7 @@ mod tests {
         let setup = setup_linear::<LinearPairing<Fr>>(&qap);
 
 
-        let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
+        let proof = prove_linear_with_specified_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
         assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_input(), &proof, &setup), "Multi-input proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::wrong_public_input(), &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
