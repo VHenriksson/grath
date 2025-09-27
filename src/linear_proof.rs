@@ -21,9 +21,8 @@
 
 use ark_ff::{Field, UniformRand, Zero, One};
 use rand_chacha::ChaCha20Rng;
-use rand::{SeedableRng, RngCore};
+use rand::{SeedableRng};
 use ark_poly::Polynomial;
-use std::ops::{AddAssign, Mul, Sub, SubAssign};
 
 use crate::basic_pairing::{BasicPairing, BasicPairingGroup};
 use crate::quadratic_arithmetic_programs::QAP;
@@ -189,9 +188,7 @@ pub fn setup_linear_with_params<E: BasicPairing>(
 ) -> Groth16SetupParameters<E::G1, E::G2> {
     let alpha_1 = E::G1::generator() * alpha;
     let beta_1 = E::G1::generator() * beta;
-    let gamma_1 = E::G1::generator() * gamma;
     let delta_1 = E::G1::generator() * delta;
-    let alpha_2 = E::G2::generator() * alpha;
     let beta_2 = E::G2::generator() * beta;
     let gamma_2 = E::G2::generator() * gamma;
     let delta_2 = E::G2::generator() * delta;
@@ -402,7 +399,6 @@ pub fn verify_linear<E: BasicPairing>(
 
 #[cfg(test)]
 mod tests {
-    use ark_poly::univariate::DensePolynomial;
 
     use crate::test_functions::{simple_qap, multi_input_qap, complex_qap};
     use crate::test_functions::linear_pairing::LinearPairing;
@@ -470,7 +466,7 @@ mod tests {
     #[test]
     fn test_setup_with_nontrivial_delta_and_gamma() {
         use ark_bn254::Fr;
-        use ark_ff::{Zero, One};
+        use ark_ff::{Zero};
         
         let qap = simple_qap::qap::<Fr>();
         
@@ -520,7 +516,6 @@ mod tests {
     #[test]
     fn test_setup_with_all_small_nontrivial_values() {
         use ark_bn254::Fr;
-        use ark_ff::One;
         
         let qap = simple_qap::qap::<Fr>();
         
@@ -548,7 +543,7 @@ mod tests {
     #[test]
     fn test_setup_with_true_randomness() {
         use ark_bn254::Fr;
-        use ark_ff::{UniformRand, One};
+        use ark_ff::{UniformRand};
         
         let qap = simple_qap::qap::<Fr>();
         
@@ -570,7 +565,6 @@ mod tests {
     #[test]
     fn test_multi_input_qap_with_fixed_params() {
         use ark_bn254::Fr;
-        use ark_ff::{Zero, One};
         
         let qap = multi_input_qap::qap::<Fr>();
 
@@ -592,7 +586,6 @@ mod tests {
     #[test]
     fn test_multi_input_qap() {
         use ark_bn254::Fr;
-        use ark_ff::One;
         
         let qap = multi_input_qap::qap::<Fr>();
 
@@ -607,7 +600,6 @@ mod tests {
     #[test]
     fn test_complex_qap() {
         use ark_bn254::Fr;
-        use ark_ff::One;
         
         let qap = complex_qap::qap::<Fr>();
         
@@ -622,7 +614,6 @@ mod tests {
     #[test]
     fn test_complex_qap_different_witness() {
         use ark_bn254::Fr;
-        use ark_ff::One;
         
         let qap = complex_qap::qap::<Fr>();
         let setup = setup_linear::<LinearPairing<Fr>>(&qap);

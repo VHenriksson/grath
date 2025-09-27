@@ -19,9 +19,9 @@
 //! let h_poly = qap.division_polynomial(&witness);
 //! ```
 
-use ark_ff::{Field, Zero};
+use ark_ff::{Field};
 use ark_poly::univariate::DensePolynomial;
-use ark_poly::{DenseUVPolynomial, Polynomial};
+use ark_poly::{DenseUVPolynomial};
 use ark_relations::r1cs::ConstraintMatrices;
 
 /// A Quadratic Arithmetic Program representation.
@@ -297,6 +297,8 @@ pub fn constraint_matrices_to_qap<F: Field>(
 mod tests {
     use super::*;
     use ark_bn254::Fr;
+    use ark_ff::Zero;
+    use ark_poly::polynomial::Polynomial;
     
     #[test]
     fn test_lagrange_interpolation() {

@@ -200,9 +200,6 @@ mod tests {
     use super::*;
     use ark_bls12_381::Bls12_381;
     use ark_bn254::{Bn254, Fr};
-    use ark_ec::bls12::Bls12;
-    use ark_ff::{Field, Zero, One};
-    use ark_poly::univariate::DensePolynomial;
 
 
     #[test]

@@ -18,9 +18,8 @@
 //! let result = evaluate_polynomial(&poly, &power_vector);
 //! ```
 
-use ark_ec::{CurveGroup, Group};
 use ark_ff::{Field, Zero};
-use std::ops::{Add, Mul, AddAssign};
+use std::ops::{Mul, AddAssign};
 
 /// Evaluate a polynomial using a precomputed power vector.
 ///
@@ -70,6 +69,7 @@ where
 mod tests {
     use super::*;
     use ark_bls12_381::{G1Projective, Fr};
+    use ark_ec::Group;
 
     #[test]
     fn test_evaluate_polynomial() {
