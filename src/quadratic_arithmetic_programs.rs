@@ -1,14 +1,43 @@
+//! # Quadratic Arithmetic Programs (QAP) Implementation
+//!
+//! ## Overview
+//!
+//! This module provides QAP construction and manipulation for the gråth library.
+//! 
+//! The QAP is cruicial for Groth16; if a QAP with a valid division polynomial H(x) can be
+//! constructed, then the prover can prove possession of a valid witness for the underlying R1CS.
+//! Therefore, this implementation checks that such a valid division polynomial is found (and panics
+//! otherwise). Hence this implementation can only be run with valid witnesses.
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! use ark_relations::r1cs::ConstraintMatrices;
+//! use crate::quadratic_arithmetic_programs::constraint_matrices_to_qap;
+//!
+//! let qap = constraint_matrices_to_qap(&matrices, num_inputs);
+//! let h_poly = qap.division_polynomial(&witness);
+//! ```
+
 use ark_ff::{Field, Zero};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseUVPolynomial, Polynomial};
 use ark_relations::r1cs::ConstraintMatrices;
 
-/// QAP representation 
+/// A Quadratic Arithmetic Program representation.
+/// 
+/// This struct encodes a R1CS as a collection of polynomials.
+///
+/// # Type Parameters
+///
+/// * `F` - The finite field type used for polynomial coefficients
 #[derive(Debug, Clone)]
 pub struct QAP<F: Field> {
+    /// Total number of variables in the QAP
     pub num_variables: usize,
+    /// Number of public input variables
     pub num_inputs: usize,
-    /// u polynomials (one per variable)
+    /// U polynomials (one per variable)
     pub u_polynomials: Vec<DensePolynomial<F>>,
     /// V polynomials (one per variable)
     pub v_polynomials: Vec<DensePolynomial<F>>,
@@ -20,7 +49,25 @@ pub struct QAP<F: Field> {
 
 impl<F: Field> QAP<F> {
     /// Generate the division polynomial H(x) = (A(x) * B(x) - C(x)) / T(x)
-    /// where A(x), B(x), C(x) are computed from the witness
+    ///
+    /// # Arguments
+    ///
+    /// * `witness` - The witness values for all variables
+    ///
+    /// # Returns
+    ///
+    /// The division polynomial H(x)
+    /// 
+    /// # Panics
+    /// 
+    /// This function panics if the witness is not valid for the given R1CS.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let witness = vec![Fr::one(), Fr::from(3u32), Fr::from(4u32), Fr::from(12u32)];
+    /// let h_poly = qap.division_polynomial(&witness);
+    /// ```
     pub fn division_polynomial(&self, witness: &[F]) -> DensePolynomial<F> {
         assert_eq!(witness.len(), self.num_variables, "Witness length must match QAP variables");
         
@@ -70,7 +117,15 @@ impl<F: Field> QAP<F> {
 }
 
 
-/// Lagrange interpolation - the heart of R1CS to QAP conversion
+/// Lagrange interpolation for polynomial construction.
+///
+/// # Arguments
+///
+/// * `points` - Evaluation points as (x, y) pairs
+///
+/// # Returns
+///
+/// Polynomial that passes through all given points
 fn lagrange_interpolate<F: Field>(points: &[(F, F)]) -> DensePolynomial<F> {
     if points.is_empty() {
         return DensePolynomial::from_coefficients_vec(vec![]);
@@ -124,6 +179,14 @@ fn lagrange_interpolate<F: Field>(points: &[(F, F)]) -> DensePolynomial<F> {
 }
 
 /// Create target polynomial T(x) = (x-1)(x-2)...(x-n)
+///
+/// # Arguments
+///
+/// * `num_constraints` - Number of constraints (determines polynomial degree)
+///
+/// # Returns
+///
+/// Target polynomial with roots at 1, 2, ..., num_constraints
 fn create_target_polynomial<F: Field>(num_constraints: usize) -> DensePolynomial<F> {
     let mut target = DensePolynomial::from_coefficients_vec(vec![F::one()]);
     
@@ -136,27 +199,21 @@ fn create_target_polynomial<F: Field>(num_constraints: usize) -> DensePolynomial
     target
 }
 
-/// Convert arkworks ConstraintMatrices to QAP
-/// 
+/// Convert constraint matrices to QAP representation.
+///
+/// # Arguments
+///
+/// * `matrices` - R1CS constraint matrices from arkworks
+/// * `num_inputs` - Number of public input variables
+///
+/// # Returns
+///
+/// QAP representation of the constraint system
+///
 /// # Example
+///
 /// ```rust,ignore
-/// use ark_bn254::Fr;
-/// use ark_relations::r1cs::ConstraintMatrices;
-/// use grath::quadratic_arithmetic_programs::constraint_matrices_to_qap;
-/// 
-/// // Create constraint matrices for x * y = z
-/// let matrices = ConstraintMatrices {
-///     num_instance_variables: 1,  // constant 1
-///     num_witness_variables: 3,   // x, y, z
-///     num_constraints: 1,
-///     u: vec![vec![(Fr::from(1u64), 1)]], // x coefficient
-///     u_num_non_zero: 1,
-///     v: vec![vec![(Fr::from(1u64), 2)]], // y coefficient  
-///     v_num_non_zero: 1,
-///     w: vec![vec![(Fr::from(1u64), 3)]], // z coefficient
-///     w_num_non_zero: 1,
-/// };
-/// 
+/// let matrices = ConstraintMatrices { /* ... */ };
 /// let qap = constraint_matrices_to_qap(&matrices, 1);
 /// ```
 pub fn constraint_matrices_to_qap<F: Field>(
