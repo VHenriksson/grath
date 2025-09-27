@@ -1,5 +1,7 @@
-//! A test QAP which is more complex than the simpler examples. Hopefully, it is complex enough
-//! to represent a more realistic scenario, although still very simple compared to real-world applications.
+//! A complex QAP for testing realistic scenarios.
+//!
+//! This module provides a more complex QAP that represents polynomial evaluation
+//! with multiple constraints and intermediate variables, closer to real-world usage.
 
 use ark_ff::Field;
 
@@ -7,17 +9,22 @@ use crate::quadratic_arithmetic_programs::QAP;
 
 
 
-/// Create a complex QAP for testing:
+/// Create a complex QAP for testing polynomial evaluation: result = a*x³ + b*x² + c*x + d
+///
+/// Constraint 1: x * x = x2          (x²)
 /// 
-/// - Constraint 1: x * x = x2          (x^2)
-/// - Constraint 2: x2 * x = x3         (x^3) 
-/// - Constraint 3: a * x3 = ax3        (a*x^3)
-/// - Constraint 4: b * x2 = bx2        (b*x^2)
-/// - Constraint 5: c * x = cx          (c*x)
-/// - Constraint 6: (ax3+bx2+cx+d) * 1 = result (final sum)
+/// Constraint 2: x2 * x = x3         (x³) 
+/// 
+/// Constraint 3: a * x3 = ax3        (a*x³)
+/// 
+/// Constraint 4: b * x2 = bx2        (b*x²)
+/// 
+/// Constraint 5: c * x = cx          (c*x)
+/// 
+/// Constraint 6: (ax3+bx2+cx+d) * 1 = result (final sum)
 ///
 /// Variables: \[1, x, result, a, b, c, d, x2, x3, ax3, bx2, cx\] (12 variables)
-/// Public inputs: constant 1, x, and result (first 3 variables as required)
+/// Public inputs: constant 1, x, and result (first 3 variables)
 pub fn qap<F: Field>() -> QAP<F> {
     use ark_relations::r1cs::ConstraintMatrices;
     use crate::quadratic_arithmetic_programs::constraint_matrices_to_qap;

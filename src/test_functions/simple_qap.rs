@@ -1,11 +1,15 @@
 //! A simple QAP for testing purposes.
+//!
+//! This module provides the simplest possible QAP with a single constraint
+//! and single witness variable for basic testing scenarios.
 use ark_ff::Field;
 
 use crate::quadratic_arithmetic_programs::QAP;
 
 /// Create a simple QAP that represents the constraint: x * 1 = 4
-/// - Constraint: x * 1 = 4
-/// 
+///
+/// Constraint: x * 1 = 4
+///
 /// Variables: [1, x] where:
 /// - variable 0 is the constant 1 (public input)
 /// - variable 1 is x (witness variable)
@@ -37,18 +41,18 @@ pub fn qap<F: Field>() -> QAP<F> {
     constraint_matrices_to_qap(&constraint_matrices, 1)
 }
 
-/// Create a satisfying witness for the constraint:
-/// - Constraint: x * 1 = 4  -> let x=4
+/// Create a satisfying witness for the constraint: x * 1 = 4
+/// Let x=4, so witness = [1, 4] for variables [1, x]
 pub fn witness<F: Field>() -> Vec<F> {
     vec![F::one(), F::from(4u32)]
 }
 
-/// Public inputs are [1] for variable [1]
+/// Public inputs: [1] for variable [constant 1]
 pub fn public_input<F: Field>() -> Vec<F> {
     vec![F::one()]
 }
 
-/// A public input that does not satisfy the QAP for any of the defined witnesses
+/// Wrong public inputs for testing verification failures
 pub fn wrong_public_input<F: Field>() -> Vec<F> {
     vec![F::from(2u32)] 
 }

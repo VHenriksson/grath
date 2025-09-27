@@ -1,12 +1,17 @@
-//! A simple test QAP with multiple public inputs to test handling of such cases.
+//! A multi-input QAP for testing multiple public inputs.
+//!
+//! This module provides a QAP with multiple public inputs to test
+//! handling of such cases in proof systems.
 use ark_ff::Field;
 
 use crate::quadratic_arithmetic_programs::QAP;
 
 /// Create a QAP with multiple public inputs:
-/// - Constraint 1: x * y = z  
-/// - Constraint 2: z * 1 = w
+///
+/// Constraint 1: x * y = z  
 /// 
+/// Constraint 2: z * 1 = w
+///
 /// Variables: [1, x, y, z, w] where:
 /// - variable 0 is the constant 1 (public input)
 /// - variable 1 is x (public input) 
@@ -43,9 +48,12 @@ pub fn qap<F: Field>() -> QAP<F> {
 }
 
 /// Create a satisfying witness for both constraints:
-/// - Constraint 1: x * y = z  -> let x=3, y=4, then z=12
-/// - Constraint 2: z * 1 = w  -> z=12, so w=12
-/// - Witness: [1, 3, 4, 12, 12] for variables [1, x, y, z, w]
+/// 
+/// Constraint 1: x * y = z  -> let x=3, y=4, then z=12
+/// 
+/// Constraint 2: z * 1 = w  -> z=12, so w=12
+/// 
+/// Witness: \[1, 3, 4, 12, 12\] for variables \[1, x, y, z, w\]
 pub fn witness<F: Field>() -> Vec<F> {
     vec![
         F::one(),         // variable 0: constant 1 (public input)
@@ -56,12 +64,12 @@ pub fn witness<F: Field>() -> Vec<F> {
     ]
 }
 
-/// Public inputs are [1, 3] for variables [1, x]
-pub fn public_inputs<F: Field>() -> Vec<F> {
+/// Public inputs: [1, 3] for variables [constant 1, x]
+pub fn public_input<F: Field>() -> Vec<F> {
     vec![F::one(), F::from(3u32)]
 }
 
-/// A public input that does not satisfy the QAP for any of the defined witnesses
+/// Wrong public inputs for testing verification failures
 pub fn wrong_public_input<F: Field>() -> Vec<F> {
     vec![F::one(), F::from(4u32)] // Incorrect x value
 }

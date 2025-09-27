@@ -394,7 +394,7 @@ mod tests {
 
 
         let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
-        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_inputs(), &proof, &setup), "Multi-input proof verification failed");
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_input(), &proof, &setup), "Multi-input proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::wrong_public_input(), &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
 
@@ -409,7 +409,7 @@ mod tests {
 
 
         let proof = prove_linear_with_randomness::<LinearPairing<Fr>>(&qap, &multi_input_qap::witness(), &setup, Fr::from(13u32), Fr::from(17u32));
-        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_inputs(), &proof, &setup), "Multi-input proof verification failed");
+        assert!(verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::public_input(), &proof, &setup), "Multi-input proof verification failed");
         assert!(!verify_linear::<LinearPairing<Fr>>(&qap, &multi_input_qap::wrong_public_input(), &proof, &setup), "Multi-input proof verification should fail with wrong public inputs");
     }
 
