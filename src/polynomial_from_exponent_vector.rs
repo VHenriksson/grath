@@ -1,8 +1,50 @@
+//! # Polynomial Evaluation with Exponent Vectors
+//!
+//! ## Overview
+//!
+//! A key feature of the Groth16 proof system is the ability to evaluate polynomials without multiplication
+//! being available to us. This is achieved by using a precomputed vector of group elements which is delivered
+//! from the trusted setup phase. 
+//! 
+//! Here we implement a function to evaluate a polynomial given such a vector.
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! use ark_poly::DenseUVPolynomial;
+//! use crate::polynomial_from_exponent_vector::evaluate_polynomial;
+//!
+//! let power_vector = vec![g, x_g, x2_g, x3_g]; // [G, x*G, x²*G, x³*G]
+//! let result = evaluate_polynomial(&poly, &power_vector);
+//! ```
+
 use ark_ec::{CurveGroup, Group};
 use ark_ff::{Field, Zero};
 use std::ops::{Add, Mul, AddAssign};
 
-// Option 1: Most general - works with any type that supports scalar multiplication and addition
+/// Evaluate a polynomial using a precomputed power vector.
+///
+/// # Type Parameters
+///
+/// * `F` - The finite field type for polynomial coefficients
+/// * `G` - The group type for the power vector elements
+///
+/// # Arguments
+///
+/// * `poly` - The polynomial to evaluate
+/// * `power_vector` - Precomputed powers [1*G, x*G, x²*G, ...]
+///
+/// # Returns
+///
+/// The polynomial evaluation result in the group G
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let poly = DenseUVPolynomial::from_coefficients_vec(vec![Fr::from(7u32), Fr::from(13u32)]);
+/// let power_vector = vec![g, x_g]; // [G, x*G]
+/// let result = evaluate_polynomial(&poly, &power_vector); // (7 + 13*x)*G
+/// ```
 pub fn evaluate_polynomial<F: Field, G>(
     poly: &ark_poly::univariate::DensePolynomial<F>, 
     power_vector: &[G]
