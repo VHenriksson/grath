@@ -1,3 +1,6 @@
+//! A test QAP which is more complex than the simpler examples. Hopefully, it is complex enough
+//! to represent a more realistic scenario, although still very simple compared to real-world applications.
+
 use ark_ff::Field;
 
 use crate::quadratic_arithmetic_programs::QAP;
@@ -5,18 +8,15 @@ use crate::quadratic_arithmetic_programs::QAP;
 
 
 /// Create a complex QAP for testing:
-/// Constraint 1: x * x = x2          (x^2)
-/// Constraint 2: x2 * x = x3         (x^3) 
-/// Constraint 3: a * x3 = ax3        (a*x^3)
-/// Constraint 4: b * x2 = bx2        (b*x^2)
-/// Constraint 5: c * x = cx          (c*x)
-/// Constraint 6: 1 * ax3 = ax3       (copy constraint for ax3)
-/// Constraint 7: 1 * bx2 = bx2       (copy constraint for bx2)  
-/// Constraint 8: 1 * cx = cx         (copy constraint for cx)
-/// Constraint 9: 1 * d = d           (copy constraint for d)
-/// Constraint 10: (ax3+bx2+cx+d) * 1 = result (final sum - this encodes addition as single constraint)
+/// 
+/// - Constraint 1: x * x = x2          (x^2)
+/// - Constraint 2: x2 * x = x3         (x^3) 
+/// - Constraint 3: a * x3 = ax3        (a*x^3)
+/// - Constraint 4: b * x2 = bx2        (b*x^2)
+/// - Constraint 5: c * x = cx          (c*x)
+/// - Constraint 6: (ax3+bx2+cx+d) * 1 = result (final sum)
 ///
-/// Variables: [1, x, result, a, b, c, d, x2, x3, ax3, bx2, cx] (12 variables)
+/// Variables: \[1, x, result, a, b, c, d, x2, x3, ax3, bx2, cx\] (12 variables)
 /// Public inputs: constant 1, x, and result (first 3 variables as required)
 pub fn qap<F: Field>() -> QAP<F> {
     use ark_relations::r1cs::ConstraintMatrices;
@@ -61,9 +61,11 @@ pub fn qap<F: Field>() -> QAP<F> {
     constraint_matrices_to_qap(&constraint_matrices, 3)
 }
 
-// Create a satisfying witness for polynomial: result = a*x^3 + b*x^2 + c*x + d
-// Let's use: x=3, a=2, b=1, c=4, d=5
-// Expected: result = 2*27 + 1*9 + 4*3 + 5 = 54 + 9 + 12 + 5 = 80
+/// Create a satisfying witness for polynomial: result = a*x^3 + b*x^2 + c*x + d
+///
+/// Let's use: x=3, a=2, b=1, c=4, d=5
+/// 
+/// Expected: result = 2*27 + 1*9 + 4*3 + 5 = 54 + 9 + 12 + 5 = 80
 pub fn witness<F: Field>() -> Vec<F> {
 
     let x = F::from(3u32);
@@ -96,16 +98,18 @@ pub fn witness<F: Field>() -> Vec<F> {
     ]
 }
 
-// Public inputs: [1, x, result] - we know x and the final result, but not the coefficients
+/// Public inputs: [1, x, result]
 pub fn public_input<F: Field>() -> Vec<F> {
     let x = F::from(3u32);
     let result = F::from(80u32);
     vec![F::one(), x, result]
 }
 
-// Alternative witness with different polynomial coefficients
-// Let's use: x=2, a=1, b=3, c=2, d=7  
-// Expected: result = 1*8 + 3*4 + 2*2 + 7 = 8 + 12 + 4 + 7 = 31
+/// Alternative witness with different polynomial coefficients
+/// 
+/// Let's use: x=2, a=1, b=3, c=2, d=7  
+/// 
+/// Expected: result = 1*8 + 3*4 + 2*2 + 7 = 8 + 12 + 4 + 7 = 31
 pub fn witness_alternative<F: Field>() -> Vec<F> {
     let x = F::from(2u32);
     let a = F::from(1u32);
@@ -137,13 +141,14 @@ pub fn witness_alternative<F: Field>() -> Vec<F> {
     ]
 }
 
-// Public inputs for the alternative witness: [1, x, result]
+/// Public inputs for the alternative witness: [1, x, result]
 pub fn public_input_alternative<F: Field>() -> Vec<F> {
     let x = F::from(2u32);
     let result = F::from(31u32);
     vec![F::one(), x, result]
 }
 
+/// A public input that does not satisfy the QAP for any of the defined witnesses
 pub fn wrong_public_input<F: Field>() -> Vec<F> {
     let x = F::from(3u32);
     let result = F::from(100u32);

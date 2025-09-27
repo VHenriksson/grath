@@ -1,64 +1,51 @@
+//! A simple test QAP with multiple public inputs to test handling of such cases.
 use ark_ff::Field;
-use ark_poly::univariate::DensePolynomial;
 
 use crate::quadratic_arithmetic_programs::QAP;
 
-
 /// Create a QAP with multiple public inputs:
-/// Constraint 1: x * y = z  
-/// Constraint 2: z * 1 = w
+/// - Constraint 1: x * y = z  
+/// - Constraint 2: z * 1 = w
+/// 
 /// Variables: [1, x, y, z, w] where:
 /// - variable 0 is the constant 1 (public input)
 /// - variable 1 is x (public input) 
 /// - variables 2,3,4 are y,z,w (witness variables)
 pub fn qap<F: Field>() -> QAP<F> {
-    use ark_poly::DenseUVPolynomial;
+    use ark_relations::r1cs::ConstraintMatrices;
+    use crate::quadratic_arithmetic_programs::constraint_matrices_to_qap;
     
-    // Same constraint structure as the single-input version, but now x is also a public input
-    // We have 2 constraints at evaluation points x=1 and x=2
+    // Variables: [1, x, y, z, w]
+    //           [ 0, 1, 2, 3, 4]
     
-    // u polynomials: encode left side of multiplication
-    let u_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 1: never selected for left side
-    let u_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::from(2u32), -F::one()]); // x: selected at x=1, not at x=2 -> 2-x
-    let u_poly_2 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // y: never selected for left side
-    let u_poly_3 = DensePolynomial::from_coefficients_vec(vec![-F::one(), F::one()]); // z: not at x=1, selected at x=2 -> x-1
-    let u_poly_4 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // w: never selected for left side
-
-    // v polynomials: encode right side of multiplication
-    let v_poly_0 = DensePolynomial::from_coefficients_vec(vec![-F::one(), F::one()]); // constant 1: not at x=1, selected at x=2 -> x-1
-    let v_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // x: never selected for right side
-    let v_poly_2 = DensePolynomial::from_coefficients_vec(vec![F::from(2u32), -F::one()]); // y: selected at x=1, not at x=2 -> 2-x
-    let v_poly_3 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // z: never selected for right side
-    let v_poly_4 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // w: never selected for right side
-
-    // w polynomials: encode output of constraint
-    let w_poly_0 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // constant 1: never is output
-    let w_poly_1 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // x: never is output
-    let w_poly_2 = DensePolynomial::from_coefficients_vec(vec![F::zero()]); // y: never is output
-    let w_poly_3 = DensePolynomial::from_coefficients_vec(vec![F::from(2u32), -F::one()]); // z: output at x=1, not at x=2 -> 2-x
-    let w_poly_4 = DensePolynomial::from_coefficients_vec(vec![-F::one(), F::one()]); // w: not at x=1, output at x=2 -> x-1
-
-    // Target polynomial: (x-1)(x-2) - evaluates to 0 when x=1 or x=2
-    let target_poly = DensePolynomial::from_coefficients_vec(vec![
-        F::from(2u32),  // constant term: 1*2 = 2
-        -F::from(3u32), // x coefficient: -(1+2) = -3
-        F::one()        // x^2 coefficient: 1
-    ]); // (x-1)(x-2) = x^2 - 3x + 2
-
-    QAP {
-        num_variables: 5,  // [1, x, y, z, w]
-        num_inputs: 2,     // public inputs: the constant 1 and x
-        u_polynomials: vec![u_poly_0, u_poly_1, u_poly_2, u_poly_3, u_poly_4],
-        v_polynomials: vec![v_poly_0, v_poly_1, v_poly_2, v_poly_3, v_poly_4],
-        w_polynomials: vec![w_poly_0, w_poly_1, w_poly_2, w_poly_3, w_poly_4],
-        target_polynomial: target_poly,
-    }
+    let constraint_matrices = ConstraintMatrices {
+        num_instance_variables: 2,  // constant 1 and x (public inputs)
+        num_witness_variables: 3,   // y, z, w (witness variables)
+        num_constraints: 2,
+        a: vec![
+            vec![(F::one(), 1)],        // Constraint 0: x * y = z
+            vec![(F::one(), 3)],        // Constraint 1: z * 1 = w
+        ],
+        a_num_non_zero: 2,
+        b: vec![
+            vec![(F::one(), 2)],        // Constraint 0: x * y = z
+            vec![(F::one(), 0)],        // Constraint 1: z * 1 = w
+        ],
+        b_num_non_zero: 2,
+        c: vec![
+            vec![(F::one(), 3)],        // Constraint 0: x * y = z
+            vec![(F::one(), 4)],        // Constraint 1: z * 1 = w
+        ],
+        c_num_non_zero: 2,
+    };
+    
+    constraint_matrices_to_qap(&constraint_matrices, 2)
 }
 
-// Create a satisfying witness for both constraints:
-// Constraint 1: x * y = z  -> let x=3, y=4, then z=12
-// Constraint 2: z * 1 = w  -> z=12, so w=12
-// Witness: [1, 3, 4, 12, 12] for variables [1, x, y, z, w]
+/// Create a satisfying witness for both constraints:
+/// - Constraint 1: x * y = z  -> let x=3, y=4, then z=12
+/// - Constraint 2: z * 1 = w  -> z=12, so w=12
+/// - Witness: [1, 3, 4, 12, 12] for variables [1, x, y, z, w]
 pub fn witness<F: Field>() -> Vec<F> {
     vec![
         F::one(),         // variable 0: constant 1 (public input)
@@ -69,11 +56,12 @@ pub fn witness<F: Field>() -> Vec<F> {
     ]
 }
 
-// Public inputs are [1, 3] for variables [1, x]
+/// Public inputs are [1, 3] for variables [1, x]
 pub fn public_inputs<F: Field>() -> Vec<F> {
     vec![F::one(), F::from(3u32)]
 }
 
+/// A public input that does not satisfy the QAP for any of the defined witnesses
 pub fn wrong_public_input<F: Field>() -> Vec<F> {
     vec![F::one(), F::from(4u32)] // Incorrect x value
 }
